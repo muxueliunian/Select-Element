@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Select Element",
+  "version": "1.0.0",
+  "description": "在 Chrome 侧边栏中采集、查看并导出网页元素快照。",
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "scripting", "tabs", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "icon/icon16.png",
+    "48": "icon/icon48.png",
+    "128": "icon/icon128.png"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "打开 Select Element",
+    "default_icon": {
+      "16": "icon/icon16.png",
+      "48": "icon/icon48.png",
+      "128": "icon/icon128.png"
+    }
+  },
+  "commands": {
+    "start-selection": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "快速开始元素选择"
+    },
+    "stop-selection": {
+      "suggested_key": {
+        "default": "Alt+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "停止元素选择"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["utils.js", "content-script.js"],
+      "css": ["content-style.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icon/icon48.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

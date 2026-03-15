@@ -1,0 +1,96 @@
+#__esi-root,
+#__esi-root * {
+  box-sizing: border-box !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+#__esi-root {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483646 !important;
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif !important;
+}
+
+#__esi-overlay {
+  position: fixed !important;
+  display: none;
+  border: 2px solid rgba(21, 101, 192, 0.95) !important;
+  background: rgba(33, 150, 243, 0.14) !important;
+  border-radius: 6px !important;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.95),
+    0 12px 28px rgba(15, 76, 129, 0.28) !important;
+  transform: translate3d(0, 0, 0) !important;
+  transition:
+    transform 90ms ease,
+    width 90ms ease,
+    height 90ms ease,
+    left 90ms ease,
+    top 90ms ease !important;
+}
+
+#__esi-overlay-label {
+  position: absolute !important;
+  top: -30px !important;
+  left: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  max-width: min(360px, 80vw) !important;
+  height: 24px !important;
+  padding: 0 10px !important;
+  border-radius: 999px !important;
+  background: rgba(13, 71, 161, 0.96) !important;
+  color: #ffffff !important;
+  font-size: 12px !important;
+  line-height: 24px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  box-shadow: 0 8px 20px rgba(13, 71, 161, 0.28) !important;
+}
+
+#__esi-hint {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-height: 44px !important;
+  max-width: min(520px, calc(100vw - 32px)) !important;
+  padding: 10px 16px !important;
+  border: 1px solid rgba(21, 101, 192, 0.28) !important;
+  border-radius: 14px !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  color: #14324c !important;
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+  transform: translateX(-50%) !important;
+  box-shadow:
+    0 12px 28px rgba(15, 76, 129, 0.24),
+    0 4px 12px rgba(15, 76, 129, 0.12) !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+#__esi-hint::before {
+  content: "" !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #2a7de1, #89bbff) !important;
+  box-shadow: 0 0 0 6px rgba(42, 125, 225, 0.12) !important;
+  flex: none !important;
+}
+
+html.__esi-selection-active,
+html.__esi-selection-active body,
+html.__esi-selection-active body * {
+  cursor: crosshair !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #__esi-overlay {
+    transition: none !important;
+  }
+}
