@@ -4,14 +4,11 @@
   }
   globalThis.__elementSnapshotInspectorLoaded = true;
 
-  const MESSAGE_TYPES = {
-    ping: "ESI_PING",
-    startSelection: "ESI_START_SELECTION",
-    stopSelection: "ESI_STOP_SELECTION",
-    selectionStopped: "ESI_SELECTION_STOPPED",
-    elementCaptured: "ESI_ELEMENT_CAPTURED",
-    fabModeChanged: "ESI_FAB_MODE_CHANGED",
-  };
+  // utils.js 在 manifest content_scripts / executeScript 中始终先于本文件加载，
+  // 因此 ElementSnapshotUtils 一定可用，常量与工具函数直接复用，避免重复实现漂移。
+  const sharedUtils = globalThis.ElementSnapshotUtils;
+  const MESSAGE_TYPES = sharedUtils.MESSAGE_TYPES;
+  const { collapseWhitespace, truncateText, roundNumber, generateId } = sharedUtils;
 
   const DOM_IDS = {
     root: "__esi-root",
@@ -154,11 +151,7 @@
     }
   `;
 
-  const FAB_MODE = {
-    off: "off",
-    currentTab: "current-tab",
-    allTabs: "all-tabs",
-  };
+  const FAB_MODE = sharedUtils.FAB_MODES;
 
   const fabState = {
     host: null,
@@ -174,6 +167,8 @@
     currentTop: -1,
     snapSide: "right",  // "left" | "right"
     enabledForThisTab: false,
+    resizeHandler: null,
+    resizeRafId: 0,
   };
 
   const LIMITS = {
@@ -183,7 +178,6 @@
   };
 
   const SAFE_DATA_ATTRIBUTE_NAMES = [
-    "data-testid",
     "data-testid",
     "data-test",
     "data-qa",
@@ -207,6 +201,17 @@
     rafId: 0,
     pointerX: 0,
     pointerY: 0,
+  };
+
+  const previewState = {
+    active: false,
+    element: null,
+    originalStyle: null,
+    overlayEl: null,
+    handleHost: null,
+    dragState: null,
+    trackHandler: null,
+    trackRafId: 0,
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -251,8 +256,377 @@
       return true;
     }
 
+    if (message.type === MESSAGE_TYPES.previewElement) {
+      const result = applyPreviewToElement(message.payload.record, {
+        width: message.payload.width,
+        height: message.payload.height,
+      });
+      sendResponse(result);
+      return true;
+    }
+
+    if (message.type === MESSAGE_TYPES.clearElementPreview) {
+      const result = clearPreview();
+      sendResponse(result);
+      return true;
+    }
+
     return false;
   });
+
+  function resolveElementFromRecord(record) {
+    if (!record) return null;
+
+    if (record.cssSelector) {
+      try {
+        const el = document.querySelector(record.cssSelector);
+        if (el && (!record.tagName || el.tagName.toLowerCase() === record.tagName.toLowerCase())) {
+          return el;
+        }
+      } catch (e) {
+        // invalid selector, fall through
+      }
+    }
+
+    if (record.xpath) {
+      try {
+        const result = document.evaluate(
+          record.xpath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        );
+        if (result.singleNodeValue instanceof HTMLElement) {
+          return result.singleNodeValue;
+        }
+      } catch (e) {
+        // invalid xpath, fall through
+      }
+    }
+
+    return null;
+  }
+
+  function createPreviewOverlay(element) {
+    let overlay = previewState.overlayEl;
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "__esi-preview-highlight";
+      document.body.appendChild(overlay);
+      previewState.overlayEl = overlay;
+    }
+
+    updatePreviewOverlayPosition(element);
+    createDragHandles(element);
+    startPreviewTracking();
+    return overlay;
+  }
+
+  // 预览高亮框/手柄使用 position:fixed + getBoundingClientRect，页面滚动或窗口缩放后
+  // 会与目标元素错位。激活期间监听 scroll/resize（rAF 节流）实时重定位。
+  function startPreviewTracking() {
+    if (previewState.trackHandler) {
+      return;
+    }
+    previewState.trackHandler = () => {
+      if (previewState.trackRafId) {
+        return;
+      }
+      previewState.trackRafId = requestAnimationFrame(() => {
+        previewState.trackRafId = 0;
+        if (previewState.active && previewState.element) {
+          updatePreviewOverlayPosition(previewState.element);
+        }
+      });
+    };
+    window.addEventListener("scroll", previewState.trackHandler, true);
+    window.addEventListener("resize", previewState.trackHandler, true);
+  }
+
+  function stopPreviewTracking() {
+    if (previewState.trackHandler) {
+      window.removeEventListener("scroll", previewState.trackHandler, true);
+      window.removeEventListener("resize", previewState.trackHandler, true);
+      previewState.trackHandler = null;
+    }
+    if (previewState.trackRafId) {
+      cancelAnimationFrame(previewState.trackRafId);
+      previewState.trackRafId = 0;
+    }
+  }
+
+  function updatePreviewOverlayPosition(element) {
+    const overlay = previewState.overlayEl;
+    if (!overlay) return;
+
+    const rect = element.getBoundingClientRect();
+    overlay.style.cssText = [
+      "position:fixed",
+      "pointer-events:none",
+      "z-index:2147483645",
+      "border:2px dashed rgba(255,152,0,0.9)",
+      "background:rgba(255,152,0,0.08)",
+      "border-radius:4px",
+      "box-shadow:0 0 0 1px rgba(255,255,255,0.6),0 4px 12px rgba(255,152,0,0.2)",
+      "transition:none",
+      "left:" + rect.left + "px",
+      "top:" + rect.top + "px",
+      "width:" + rect.width + "px",
+      "height:" + rect.height + "px",
+    ].join(";");
+
+    // Update handle positions too
+    if (previewState.handleHost) {
+      positionDragHandles(rect);
+    }
+  }
+
+  const DRAG_HANDLE_STYLES = `
+    :host {
+      all: initial;
+      position: fixed;
+      z-index: 2147483646;
+      pointer-events: none;
+      display: block;
+    }
+    .handle {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      background: #fff;
+      border: 2px solid rgba(255,152,0,0.9);
+      border-radius: 2px;
+      pointer-events: auto;
+      z-index: 2147483646;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+    }
+    .handle-e, .handle-w { cursor: ew-resize; }
+    .handle-s, .handle-n { cursor: ns-resize; }
+    .handle-se { cursor: nwse-resize; }
+    .handle-sw { cursor: nesw-resize; }
+    .handle-ne { cursor: nesw-resize; }
+    .handle-nw { cursor: nwse-resize; }
+  `;
+
+  function createDragHandles(element) {
+    removeDragHandles();
+
+    const host = document.createElement("div");
+    host.id = "__esi-drag-handles";
+    const shadow = host.attachShadow({ mode: "closed" });
+
+    const style = document.createElement("style");
+    style.textContent = DRAG_HANDLE_STYLES;
+    shadow.appendChild(style);
+
+    const dirs = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+    dirs.forEach((dir) => {
+      const h = document.createElement("div");
+      h.className = "handle handle-" + dir;
+      h.dataset.dir = dir;
+      h.addEventListener("mousedown", onHandleMouseDown);
+      shadow.appendChild(h);
+    });
+
+    document.body.appendChild(host);
+    previewState.handleHost = host;
+    previewState.handleShadow = shadow;
+
+    const rect = element.getBoundingClientRect();
+    positionDragHandles(rect);
+  }
+
+  function positionDragHandles(rect) {
+    const shadow = previewState.handleShadow;
+    if (!shadow) return;
+
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const map = {
+      n:  { left: cx - 5, top: rect.top - 5 },
+      s:  { left: cx - 5, top: rect.top + rect.height - 5 },
+      e:  { left: rect.left + rect.width - 5, top: cy - 5 },
+      w:  { left: rect.left - 5, top: cy - 5 },
+      ne: { left: rect.left + rect.width - 5, top: rect.top - 5 },
+      nw: { left: rect.left - 5, top: rect.top - 5 },
+      se: { left: rect.left + rect.width - 5, top: rect.top + rect.height - 5 },
+      sw: { left: rect.left - 5, top: rect.top + rect.height - 5 },
+    };
+
+    shadow.querySelectorAll(".handle").forEach((h) => {
+      const pos = map[h.dataset.dir];
+      if (pos) {
+        h.style.left = pos.left + "px";
+        h.style.top = pos.top + "px";
+      }
+    });
+  }
+
+  function removeDragHandles() {
+    if (previewState.handleHost) {
+      previewState.handleHost.remove();
+      previewState.handleHost = null;
+      previewState.handleShadow = null;
+    }
+  }
+
+  function onHandleMouseDown(e) {
+    if (!previewState.active || !previewState.element) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const el = previewState.element;
+    const rect = el.getBoundingClientRect();
+    previewState.dragState = {
+      dir: e.currentTarget.dataset.dir,
+      startX: e.clientX,
+      startY: e.clientY,
+      startWidth: rect.width,
+      startHeight: rect.height,
+      startLeft: rect.left,
+      startTop: rect.top,
+    };
+
+    document.addEventListener("mousemove", onHandleMouseMove, true);
+    document.addEventListener("mouseup", onHandleMouseUp, true);
+  }
+
+  function onHandleMouseMove(e) {
+    const ds = previewState.dragState;
+    if (!ds || !previewState.element) return;
+    e.preventDefault();
+
+    const el = previewState.element;
+    const dx = e.clientX - ds.startX;
+    const dy = e.clientY - ds.startY;
+    const dir = ds.dir;
+
+    let newWidth = ds.startWidth;
+    let newHeight = ds.startHeight;
+
+    if (dir.includes("e")) newWidth = Math.max(20, ds.startWidth + dx);
+    if (dir.includes("w")) newWidth = Math.max(20, ds.startWidth - dx);
+    if (dir.includes("s")) newHeight = Math.max(20, ds.startHeight + dy);
+    if (dir.includes("n")) newHeight = Math.max(20, ds.startHeight - dy);
+
+    el.style.width = Math.round(newWidth) + "px";
+    el.style.height = Math.round(newHeight) + "px";
+
+    updatePreviewOverlayPosition(el);
+  }
+
+  function onHandleMouseUp(e) {
+    document.removeEventListener("mousemove", onHandleMouseMove, true);
+    document.removeEventListener("mouseup", onHandleMouseUp, true);
+
+    if (!previewState.element) {
+      previewState.dragState = null;
+      return;
+    }
+
+    const computed = getComputedStyle(previewState.element);
+    const width = computed.width;
+    const height = computed.height;
+
+    previewState.dragState = null;
+
+    // Notify sidepanel of new size
+    try {
+      chrome.runtime.sendMessage({
+        type: MESSAGE_TYPES.previewSizeChanged,
+        payload: { width, height },
+      });
+    } catch (err) {
+      // sidepanel might be closed
+    }
+  }
+
+  function removePreviewOverlay() {
+    stopPreviewTracking();
+    if (previewState.overlayEl) {
+      previewState.overlayEl.remove();
+      previewState.overlayEl = null;
+    }
+    removeDragHandles();
+  }
+
+  function applyPreviewToElement(record, size) {
+    // Clear any existing preview first
+    if (previewState.active) {
+      clearPreview();
+    }
+
+    const element = resolveElementFromRecord(record);
+    if (!element) {
+      return {
+        ok: false,
+        error: "无法定位目标元素，可能页面已刷新或 DOM 已变化。",
+      };
+    }
+
+    // Detect inline elements where width/height won't take effect
+    const display = getComputedStyle(element).display;
+    const isInline = display === "inline";
+
+    previewState.originalStyle = element.style.cssText;
+    previewState.element = element;
+    previewState.active = true;
+
+    if (size.width) {
+      element.style.width = size.width;
+    }
+    if (size.height) {
+      element.style.height = size.height;
+    }
+
+    createPreviewOverlay(element);
+
+    if (isInline && (size.width || size.height)) {
+      return {
+        ok: true,
+        warning: "目标元素是 inline 元素，宽高设置可能不会生效。建议先改为 inline-block 或 block。",
+      };
+    }
+
+    return { ok: true };
+  }
+
+  function clearPreview() {
+    if (!previewState.active) {
+      return { ok: true };
+    }
+
+    document.removeEventListener("mousemove", onHandleMouseMove, true);
+    document.removeEventListener("mouseup", onHandleMouseUp, true);
+    previewState.dragState = null;
+
+    if (previewState.element) {
+      previewState.element.style.cssText = previewState.originalStyle || "";
+    }
+
+    removePreviewOverlay();
+
+    previewState.active = false;
+    previewState.element = null;
+    previewState.originalStyle = null;
+
+    return { ok: true };
+  }
+
+  // Clean up preview on visibility change (tab switch)
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && previewState.active) {
+      clearPreview();
+    }
+  });
+
+  // ESC exits preview mode
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && previewState.active && !state.active) {
+      clearPreview();
+    }
+  }, true);
 
   function startSelection() {
     if (state.active) {
@@ -523,7 +897,7 @@
         .then(() => {
           const promptText = buildPromptText(snapshot);
           return copyToClipboard(promptText).then(() => {
-            showToast("已采集，提示文本已复制到剪贴板");
+            showToast("已采集，预制提示词已复制到剪贴板");
           });
         })
         .catch((error) => {
@@ -632,46 +1006,7 @@
   // ── 提示文本生成 & 剪贴板 ───────────────────────────────────────────────────
 
   function buildPromptText(snapshot) {
-    const sharedUtils = globalThis.ElementSnapshotUtils;
-    if (sharedUtils && typeof sharedUtils.buildCursorPromptText === "function") {
-      return sharedUtils.buildCursorPromptText(snapshot);
-    }
-
-    if (!snapshot) return "";
-
-    const domPath = snapshot.domPath || snapshot.cssSelector || snapshot.xpath || "未知路径";
-    const pos = snapshot.position || {};
-    const htmlSnippet = truncateText(collapseWhitespace(snapshot.html || ""), 520);
-
-    const lines = [
-      `DOM Path: ${domPath}`,
-      `Position: top=${Math.round(pos.top || 0)}px, left=${Math.round(pos.left || 0)}px, width=${Math.round(pos.width || 0)}px, height=${Math.round(pos.height || 0)}px`,
-      `HTML Element: ${htmlSnippet}`,
-    ];
-
-    if (snapshot.cssSelector) {
-      lines.push(`CSS Selector: ${snapshot.cssSelector}`);
-    }
-
-    const fh = snapshot.frameworkHints;
-    if (fh && fh.react && Array.isArray(fh.react.componentChain) && fh.react.componentChain.length) {
-      lines.push(`React Component Chain: ${fh.react.componentChain.join(" > ")}`);
-      if (fh.react.debugSource) {
-        lines.push(`React Debug Source: ${fh.react.debugSource}`);
-      }
-    }
-    if (fh && fh.vue && Array.isArray(fh.vue.componentChain) && fh.vue.componentChain.length) {
-      lines.push(`Vue Component Chain: ${fh.vue.componentChain.join(" > ")}`);
-      if (fh.vue.singleFileComponent) {
-        lines.push(`Vue SFC File: ${fh.vue.singleFileComponent}`);
-      }
-    }
-
-    if (snapshot.sourceHints && Array.isArray(snapshot.sourceHints.primaryQueries) && snapshot.sourceHints.primaryQueries.length) {
-      lines.push(`Search Hints: ${snapshot.sourceHints.primaryQueries.slice(0, 3).join(" | ")}`);
-    }
-
-    return lines.join("\n");
+    return sharedUtils.buildAgentTaskPrompt(snapshot);
   }
 
   async function copyToClipboard(text) {
@@ -731,35 +1066,14 @@
     }, durationMs || 2000);
   }
 
-  function collapseWhitespace(value) {
-    return String(value || "").replace(/\s+/g, " ").trim();
-  }
-
+  // collapseWhitespace / truncateText / roundNumber / generateId 复用 utils.js（见顶部解构）。
+  // truncateRaw 与 truncateText 不同：它对超长 HTML 追加注释标记，故保留为本地实现。
   function truncateRaw(value, maxLength) {
     const text = String(value || "");
     if (text.length <= maxLength) {
       return text;
     }
     return `${text.slice(0, maxLength)}\n<!-- 已截断 -->`;
-  }
-
-  function truncateText(value, maxLength) {
-    const text = String(value || "");
-    if (text.length <= maxLength) {
-      return text;
-    }
-    return `${text.slice(0, maxLength)}…`;
-  }
-
-  function roundNumber(value) {
-    return Math.round((Number(value) || 0) * 100) / 100;
-  }
-
-  function generateId() {
-    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return window.crypto.randomUUID();
-    }
-    return `snapshot-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   }
 
   function getElementSnapshot(element) {
@@ -1559,17 +1873,26 @@
       return `//*[@id=${toXPathLiteral(element.id)}]`;
     }
 
+    const MAX_DEPTH = 12;
     const parts = [];
     let current = element;
+    let depth = 0;
 
-    while (current && current.nodeType === Node.ELEMENT_NODE) {
+    while (current && current.nodeType === Node.ELEMENT_NODE && depth < MAX_DEPTH) {
+      // 命中带 id 的祖先时以其作为锚点截断，缩短路径并提升稳健性
+      if (current !== element && current.id) {
+        return `//*[@id=${toXPathLiteral(current.id)}]/${parts.join("/")}`;
+      }
       const tagName = current.tagName.toLowerCase();
       const index = getXPathIndex(current);
       parts.unshift(`${tagName}[${index}]`);
       current = current.parentElement;
+      depth += 1;
     }
 
-    return `/${parts.join("/")}`;
+    // 自然到达根节点用绝对路径；因深度上限截断则用 // 锚点，保证 XPath 仍合法
+    const reachedRoot = !current || current.nodeType !== Node.ELEMENT_NODE;
+    return `${reachedRoot ? "/" : "//"}${parts.join("/")}`;
   }
 
   function getXPathIndex(element) {
@@ -1875,6 +2198,36 @@
     };
     document.addEventListener("click", fabState.documentClickHandler, true);
 
+    // 窗口缩放（含侧边栏开合导致的视口变化）后，FAB 的绝对像素坐标可能落到视口外被遮挡。
+    // 监听 resize（rAF 节流），按当前所在边缘重新贴边并夹取，确保始终可见可点。
+    function repositionForViewport() {
+      if (fabState.snapSide === "left") {
+        fabState.currentLeft = EDGE_MARGIN;
+      } else {
+        fabState.currentLeft = window.innerWidth - FAB_SIZE - EDGE_MARGIN;
+      }
+      const clamped = clampPosition(fabState.currentLeft, fabState.currentTop);
+      fabState.currentLeft = clamped.left;
+      fabState.currentTop = clamped.top;
+      applyPosition(false);
+    }
+
+    if (fabState.resizeHandler) {
+      window.removeEventListener("resize", fabState.resizeHandler);
+    }
+    fabState.resizeHandler = () => {
+      if (fabState.dragging || fabState.resizeRafId) {
+        return;
+      }
+      fabState.resizeRafId = requestAnimationFrame(() => {
+        fabState.resizeRafId = 0;
+        if (fabState.host) {
+          repositionForViewport();
+        }
+      });
+    };
+    window.addEventListener("resize", fabState.resizeHandler);
+
     initFabPosition();
     updateSnapClass();
 
@@ -1895,6 +2248,15 @@
     if (fabState.documentClickHandler) {
       document.removeEventListener("click", fabState.documentClickHandler, true);
       fabState.documentClickHandler = null;
+    }
+
+    if (fabState.resizeHandler) {
+      window.removeEventListener("resize", fabState.resizeHandler);
+      fabState.resizeHandler = null;
+    }
+    if (fabState.resizeRafId) {
+      cancelAnimationFrame(fabState.resizeRafId);
+      fabState.resizeRafId = 0;
     }
 
     if (fabState.host) {

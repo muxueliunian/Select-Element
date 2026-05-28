@@ -24,6 +24,9 @@
     selectionStateChanged: "ESI_SELECTION_STATE_CHANGED",
     setFabMode: "ESI_SET_FAB_MODE",
     fabModeChanged: "ESI_FAB_MODE_CHANGED",
+    previewElement: "ESI_PREVIEW_ELEMENT",
+    clearElementPreview: "ESI_CLEAR_ELEMENT_PREVIEW",
+    previewSizeChanged: "ESI_PREVIEW_SIZE_CHANGED",
   });
 
   const DEFAULT_SELECTION_STATE = Object.freeze({
@@ -375,6 +378,86 @@
     return lines.join("\n");
   }
 
+  function buildAgentTaskPrompt(record) {
+    if (!record) {
+      return "";
+    }
+
+    const locator = buildCursorPromptText(record);
+    return [
+      '下面这段「复制提示文本」描述的是我要修改的目标组件。请先在前端项目中定位它对应的组件、文件、样式来源和可能关联的父级容器，再根据我的改动需求进行修改。',
+      "",
+      "目标组件定位信息：",
+      locator,
+      "",
+      "我的改动需求：",
+      "[请在这里填写你的改动需求]",
+    ].join("\n");
+  }
+
+  const STYLE_CHANGE_TYPES = Object.freeze({
+    resize: { label: "改宽高", key: "resize" },
+    spacing: { label: "改间距", key: "spacing" },
+    borderRadius: { label: "改圆角", key: "borderRadius" },
+    fontSize: { label: "改字号", key: "fontSize" },
+    color: { label: "改颜色", key: "color" },
+    layout: { label: "改布局", key: "layout" },
+  });
+
+  function buildStyleChangePrompt(record, changeType, previewValues) {
+    if (!record) {
+      return "";
+    }
+
+    const locator = buildCursorPromptText(record);
+    const pv = previewValues || {};
+    const templates = {
+      resize: [
+        "请将目标组件的宽度改为 " + (pv.width || "[目标宽度]") + "，高度改为 " + (pv.height || "[目标高度]") + "。",
+        "同时检查桌面端和移动端的影响，确保不破坏父容器布局。",
+      ],
+      spacing: [
+        "请调整目标组件的间距（margin / padding），具体值：[请填写目标间距]。",
+        "注意检查：flex/grid gap 影响、相邻兄弟元素间距变化、移动端断点下的表现。",
+      ],
+      borderRadius: [
+        "请将目标组件的圆角（border-radius）改为 [请填写目标圆角值]。",
+        "注意检查：overflow: hidden 裁切影响、子元素圆角是否需要同步、移动端表现。",
+      ],
+      fontSize: [
+        "请将目标组件的字号（font-size）改为 [请填写目标字号]。",
+        "注意检查：行高（line-height）适配、文本溢出处理、响应式断点下字号是否需要阶梯调整。",
+      ],
+      color: [
+        "请将目标组件的颜色改为 [请填写目标颜色值]。",
+        "注意检查：hover/active/disabled 状态颜色是否需同步、深色模式适配、对比度是否符合可访问性标准。",
+      ],
+      layout: [
+        "请调整目标组件的布局方式，改为 [请描述目标布局，如 flex 水平居中、grid 两列等]。",
+        "注意检查：子元素排列顺序、间距分配、移动端响应式收缩策略、overflow 处理。",
+      ],
+    };
+
+    const changeLines = templates[changeType] || ["请描述你的样式修改需求：[填写]"];
+
+    const lines = [
+      "下面这段描述的是我要修改的目标组件。请先在前端项目中定位它对应的组件、文件、样式来源和可能关联的父级容器，再按照修改需求执行。",
+      "",
+      "目标组件定位信息：",
+      locator,
+      "",
+      "修改需求：",
+      ...changeLines,
+      "",
+      "附加检查项：",
+      "- 父容器布局影响（flex / grid 约束）",
+      "- 移动端断点表现",
+      "- overflow / wrapping 问题",
+    ];
+
+    return lines.join("\n");
+  }
+
   function buildRecordMarkdown(record) {
     if (!record) {
       return "";
@@ -457,6 +540,9 @@
     buildRecordMarkdown,
     buildSourceLocatorText,
     buildCursorPromptText,
+    buildAgentTaskPrompt,
+    buildStyleChangePrompt,
+    STYLE_CHANGE_TYPES,
     downloadJsonFile,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

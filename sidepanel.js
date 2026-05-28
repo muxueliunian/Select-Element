@@ -12,6 +12,20 @@ const state = {
 
 const refs = {};
 let toastTimer = 0;
+let searchDebounceTimer = 0;
+
+// 搜索索引按记录对象缓存：记录数据不可变，输入框每次按键无需对全部记录重算索引。
+// 记录在 refreshAll 时会被替换为新对象，WeakMap 自动随旧对象回收。
+const searchIndexCache = new WeakMap();
+
+function getRecordSearchIndex(record) {
+  let index = searchIndexCache.get(record);
+  if (index === undefined) {
+    index = utils.buildRecordSearchIndex(record);
+    searchIndexCache.set(record, index);
+  }
+  return index;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
@@ -36,11 +50,19 @@ function cacheElements() {
   refs.noteInput = document.getElementById("noteInput");
   refs.saveNoteButton = document.getElementById("saveNoteButton");
   refs.copyLocatorButton = document.getElementById("copyLocatorButton");
+  refs.copyAgentPromptButton = document.getElementById("copyAgentPromptButton");
   refs.copyMarkdownButton = document.getElementById("copyMarkdownButton");
   refs.deleteCurrentButton = document.getElementById("deleteCurrentButton");
   refs.jsonViewer = document.getElementById("jsonViewer");
   refs.toast = document.getElementById("toast");
   refs.fabModeControl = document.getElementById("fabModeControl");
+  refs.previewPanel = document.getElementById("previewPanel");
+  refs.previewWidth = document.getElementById("previewWidth");
+  refs.previewHeight = document.getElementById("previewHeight");
+  refs.previewButton = document.getElementById("previewButton");
+  refs.restoreButton = document.getElementById("restoreButton");
+  refs.styleChangeSelect = document.getElementById("styleChangeSelect");
+  refs.copyStylePromptButton = document.getElementById("copyStylePromptButton");
 }
 
 function bindEvents() {
@@ -52,8 +74,12 @@ function bindEvents() {
   refs.searchInput.addEventListener("input", handleSearchInput);
   refs.saveNoteButton.addEventListener("click", handleSaveNote);
   refs.copyLocatorButton.addEventListener("click", handleCopyLocator);
+  refs.copyAgentPromptButton.addEventListener("click", handleCopyAgentTaskPrompt);
   refs.copyMarkdownButton.addEventListener("click", handleCopyMarkdown);
   refs.deleteCurrentButton.addEventListener("click", handleDeleteCurrent);
+  refs.previewButton.addEventListener("click", handlePreview);
+  refs.restoreButton.addEventListener("click", handleRestore);
+  refs.copyStylePromptButton.addEventListener("click", handleCopyStylePrompt);
   refs.listContainer.addEventListener("click", handleListClick);
   refs.listContainer.addEventListener("keydown", handleListKeyDown);
   refs.fabModeControl.addEventListener("click", handleFabModeClick);
@@ -68,6 +94,13 @@ function bindEvents() {
       message.type === MESSAGE_TYPES.selectionStateChanged
     ) {
       refreshAll(true);
+    }
+
+    if (message.type === MESSAGE_TYPES.previewSizeChanged && message.payload) {
+      const w = message.payload.width || "";
+      const h = message.payload.height || "";
+      refs.previewWidth.value = w.replace(/px$/, "");
+      refs.previewHeight.value = h.replace(/px$/, "");
     }
   });
 
@@ -125,7 +158,7 @@ function applyFilter() {
   }
 
   state.filteredRecords = state.records.filter((record) =>
-    utils.buildRecordSearchIndex(record).includes(keyword)
+    getRecordSearchIndex(record).includes(keyword)
   );
 }
 
@@ -257,9 +290,13 @@ function updateActionStates() {
   refs.exportButton.disabled = !hasRecords;
   refs.clearButton.disabled = !hasRecords;
   refs.copyLocatorButton.disabled = !selectedRecord;
+  refs.copyAgentPromptButton.disabled = !selectedRecord;
   refs.copyMarkdownButton.disabled = !selectedRecord;
   refs.deleteCurrentButton.disabled = !selectedRecord;
   refs.saveNoteButton.disabled = !selectedRecord;
+  refs.previewButton.disabled = !selectedRecord;
+  refs.restoreButton.disabled = !selectedRecord;
+  refs.copyStylePromptButton.disabled = !selectedRecord;
 }
 
 async function handleStartSelection() {
@@ -345,6 +382,127 @@ async function handleCopyLocator() {
   }
 }
 
+async function handleCopyAgentTaskPrompt() {
+  const record = getSelectedRecord();
+  if (!record) {
+    showToast("请先选择一条记录");
+    return;
+  }
+
+  try {
+    await copyText(utils.buildAgentTaskPrompt(record));
+    showToast("预制提示词已复制");
+  } catch (error) {
+    showToast(error && error.message ? error.message : "复制失败");
+  }
+}
+
+function normalizeSize(value) {
+  const v = (value || "").trim();
+  if (!v) return "";
+  if (v === "auto") return v;
+  if (/^[\d.]+$/.test(v)) return v + "px";
+  return v;
+}
+
+function tryClearPreview() {
+  getCurrentTabId().then((tabId) => {
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.clearElementPreview,
+      tabId,
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
+function autoHighlightSelected() {
+  const record = getSelectedRecord();
+  if (!record) return;
+  getCurrentTabId().then((tabId) => {
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.previewElement,
+      payload: { record, width: "", height: "" },
+      tabId,
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
+async function handlePreview() {
+  const record = getSelectedRecord();
+  if (!record) {
+    showToast("请先选择一条记录");
+    return;
+  }
+
+  const width = normalizeSize(refs.previewWidth.value);
+  const height = normalizeSize(refs.previewHeight.value);
+
+  if (!width && !height) {
+    showToast("请输入宽度或高度");
+    return;
+  }
+
+  try {
+    const tabId = await getCurrentTabId();
+    const response = await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.previewElement,
+      payload: { record, width, height },
+      tabId,
+    });
+
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "预览失败");
+    }
+
+    if (response.warning) {
+      showToast(response.warning);
+    } else {
+      showToast("预览已应用");
+    }
+  } catch (error) {
+    showToast(error && error.message ? error.message : "预览失败");
+  }
+}
+
+async function handleRestore() {
+  try {
+    const tabId = await getCurrentTabId();
+    const response = await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.clearElementPreview,
+      tabId,
+    });
+
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "恢复失败");
+    }
+
+    showToast("已恢复原始样式");
+  } catch (error) {
+    showToast(error && error.message ? error.message : "恢复失败");
+  }
+}
+
+async function handleCopyStylePrompt() {
+  const record = getSelectedRecord();
+  if (!record) {
+    showToast("请先选择一条记录");
+    return;
+  }
+
+  const changeType = refs.styleChangeSelect.value;
+  const previewValues = {
+    width: normalizeSize(refs.previewWidth.value),
+    height: normalizeSize(refs.previewHeight.value),
+  };
+
+  try {
+    await copyText(utils.buildStyleChangePrompt(record, changeType, previewValues));
+    const label = (utils.STYLE_CHANGE_TYPES[changeType] && utils.STYLE_CHANGE_TYPES[changeType].label) || changeType;
+    showToast("「" + label + "」提示词已复制");
+  } catch (error) {
+    showToast(error && error.message ? error.message : "复制失败");
+  }
+}
+
 async function handleExport() {
   if (!state.records.length) {
     showToast("暂无可导出的记录");
@@ -376,10 +534,15 @@ async function handleClearRecords() {
 }
 
 function handleSearchInput(event) {
-  state.searchKeyword = event.target.value || "";
-  applyFilter();
-  ensureValidSelection(true);
-  render();
+  const value = event.target.value || "";
+  // 防抖：连续输入时只在停顿后过滤+重渲染一次，避免每次按键全量重建列表
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = window.setTimeout(() => {
+    state.searchKeyword = value;
+    applyFilter();
+    ensureValidSelection(true);
+    render();
+  }, 150);
 }
 
 async function handleSaveNote() {
@@ -438,8 +601,7 @@ async function handleListClick(event) {
     return;
   }
 
-  state.selectedId = card.dataset.recordId;
-  render();
+  applySelection(card.dataset.recordId);
 }
 
 function handleListKeyDown(event) {
@@ -453,8 +615,25 @@ function handleListKeyDown(event) {
   }
 
   event.preventDefault();
-  state.selectedId = card.dataset.recordId;
-  render();
+  applySelection(card.dataset.recordId);
+}
+
+// 切换选中：仅更新受影响卡片的高亮 + 详情/操作区，避免重建整个列表 DOM
+function applySelection(newId) {
+  if (newId !== state.selectedId) {
+    tryClearPreview();
+    state.selectedId = newId;
+    updateSelectionHighlight();
+    renderDetail();
+    updateActionStates();
+  }
+  autoHighlightSelected();
+}
+
+function updateSelectionHighlight() {
+  refs.listContainer.querySelectorAll("[data-record-id]").forEach((card) => {
+    card.classList.toggle("is-selected", card.dataset.recordId === state.selectedId);
+  });
 }
 
 function renderFabMode() {

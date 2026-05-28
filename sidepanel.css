@@ -41,32 +41,37 @@ button, input, textarea {
 }
 
 .app-shell {
-  min-height: 100vh;
-  padding: 16px;
+  height: 100vh;
+  padding: 12px 12px 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
+  overflow: hidden;
+}
+
+/* 顶部控制区：不随内容滚动，始终可见 */
+.topbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .hero {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
 .hero h1 {
-  margin: 0 0 4px 0;
-  font-size: 20px;
+  margin: 0;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.2;
   letter-spacing: -0.02em;
-}
-
-.hero__desc {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
 }
 
 .status-badge {
@@ -87,21 +92,16 @@ button, input, textarea {
   box-shadow: var(--shadow-sm);
 }
 
-.toolbar {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.toolbar__row {
+.primary-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.toolbar__row:last-of-type {
-  grid-template-columns: 1fr;
+.secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .button {
@@ -165,7 +165,47 @@ button, input, textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 4px;
+}
+
+/* 折叠式次要设置：默认收起，节省竖向空间 */
+.settings-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--secondary);
+}
+
+.settings-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-fold > summary::before {
+  content: "▸";
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.settings-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-fold__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
 }
 
 .search-input {
@@ -190,7 +230,7 @@ button, input, textarea {
   align-items: center;
   gap: 6px 12px;
   padding: 8px 10px;
-  background: var(--secondary);
+  background: var(--panel);
   border-radius: var(--radius);
   border: 1px solid var(--border);
 }
@@ -234,7 +274,7 @@ kbd {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: var(--secondary);
+  background: var(--panel);
   border-radius: var(--radius);
   border: 1px solid var(--border);
 }
@@ -289,24 +329,44 @@ kbd {
   color: var(--muted);
 }
 
+/* 内容区填满顶栏以下的全部高度；列表与详情各自滚动 */
 .layout {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
+  padding-bottom: 12px;
 }
 
 .panel-section {
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* 列表占约 40% 高度，详情占约 60%，都按面板实际高度自适应 */
+.list-section {
+  flex: 2 1 0;
+  min-height: 96px;
+}
+
+.detail-panel {
+  flex: 3 1 0;
+  min-height: 120px;
+  overflow-y: auto;
+}
+
+.section-heading {
+  flex: none;
 }
 
 .section-heading h2 {
-  margin: 0 0 4px 0;
-  font-size: 14px;
+  margin: 0;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -322,8 +382,7 @@ kbd {
   flex-direction: column;
   gap: 8px;
   flex: 1;
-  min-height: 180px;
-  max-height: 360px;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -471,6 +530,97 @@ kbd {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.preview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--secondary);
+}
+
+.preview-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+
+
+.preview-inputs {
+  display: flex;
+  gap: 10px;
+}
+
+.preview-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.preview-field input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  transition: border-color 0.2s ease;
+}
+
+.preview-field input:focus {
+  border-color: var(--focus-ring);
+  outline: none;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.style-prompt-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.style-prompt-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.style-prompt-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.style-select {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.style-select:focus {
+  border-color: var(--focus-ring);
+  outline: none;
 }
 
 .note-field {

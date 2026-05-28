@@ -93,4 +93,7 @@ html.__esi-selection-active body * {
   #__esi-overlay {
     transition: none !important;
   }
+  .__esi-preview-highlight {
+    transition: none !important;
+  }
 }

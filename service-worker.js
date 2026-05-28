@@ -146,15 +146,19 @@ async function ensureContentScript(tabId) {
     files: ["utils.js", "content-script.js"],
   });
 
-  await sleep(80);
-
-  const ready = await safeSendTabMessage(tabId, {
-    type: MESSAGE_TYPES.ping,
-  });
-
-  if (!ready || !ready.ready) {
-    throw new Error("页面注入失败，请刷新页面后重试。");
+  // 轮询 ping 取代固定 80ms 等待：内容脚本注入后通常立即就绪，
+  // 就绪即返回，必要时最多等待约 300ms，兼顾速度与可靠性。
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const ready = await safeSendTabMessage(tabId, {
+      type: MESSAGE_TYPES.ping,
+    });
+    if (ready && ready.ready) {
+      return;
+    }
+    await sleep(30);
   }
+
+  throw new Error("页面注入失败，请刷新页面后重试。");
 }
 
 async function notifySelectionStateChanged(state) {
@@ -319,31 +323,68 @@ async function handleSetFabMode(mode, requestedTabId) {
   if (saved === FAB_MODES.allTabs) {
     // Broadcast to ALL supported tabs: show FAB
     const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      await sendFabModeToTab(tab, { mode: saved, show: true });
-    }
+    await Promise.all(tabs.map((tab) => sendFabModeToTab(tab, { mode: saved, show: true })));
   } else if (saved === FAB_MODES.currentTab) {
     // Show FAB only on the requested tab; hide on all others
     const tabs = await chrome.tabs.query({});
     const activeTab = await resolveTargetTab(requestedTabId);
     const activeTabId = activeTab ? activeTab.id : null;
 
-    for (const tab of tabs) {
-      await sendFabModeToTab(tab, {
-        mode: saved,
-        tabId: tab.id,
-        show: tab.id === activeTabId,
-      });
-    }
+    await Promise.all(
+      tabs.map((tab) =>
+        sendFabModeToTab(tab, {
+          mode: saved,
+          tabId: tab.id,
+          show: tab.id === activeTabId,
+        })
+      )
+    );
   } else {
     // off — hide FAB on all tabs
     const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      await sendFabModeToTab(tab, { mode: saved, show: false });
-    }
+    await Promise.all(tabs.map((tab) => sendFabModeToTab(tab, { mode: saved, show: false })));
   }
 
   return { ok: true, fabMode: saved };
+}
+
+async function handlePreviewElement(payload, requestedTabId) {
+  const tab = await resolveTargetTab(requestedTabId);
+  if (!tab || typeof tab.id !== "number") {
+    throw new Error("未找到目标标签页。");
+  }
+  await ensureContentScript(tab.id);
+  const response = await safeSendTabMessage(tab.id, {
+    type: MESSAGE_TYPES.previewElement,
+    payload,
+  });
+  if (!response || response.ok === false) {
+    throw new Error((response && response.error) || "预览失败。");
+  }
+  return response;
+}
+
+async function handleClearElementPreview(requestedTabId) {
+  const tab = await resolveTargetTab(requestedTabId);
+  if (!tab || typeof tab.id !== "number") {
+    throw new Error("未找到目标标签页。");
+  }
+  await ensureContentScript(tab.id);
+  const response = await safeSendTabMessage(tab.id, {
+    type: MESSAGE_TYPES.clearElementPreview,
+  });
+  if (!response || response.ok === false) {
+    throw new Error((response && response.error) || "恢复失败。");
+  }
+  return response;
+}
+
+async function handlePreviewSizeChanged(payload) {
+  await safeBroadcast({
+    type: MESSAGE_TYPES.previewSizeChanged,
+    payload,
+  });
+  return { ok: true };
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
@@ -389,13 +430,15 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const newTabId = activeInfo.tabId;
     const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
 
-    for (const tab of tabs) {
-      await sendFabModeToTab(tab, {
-        mode,
-        tabId: tab.id,
-        show: tab.id === newTabId,
-      });
-    }
+    await Promise.all(
+      tabs.map((tab) =>
+        sendFabModeToTab(tab, {
+          mode,
+          tabId: tab.id,
+          show: tab.id === newTabId,
+        })
+      )
+    );
   } catch (error) {
     console.warn("tabs.onActivated FAB 处理失败：", error);
   }
@@ -444,6 +487,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return handleGetPanelData();
       case MESSAGE_TYPES.setFabMode:
         return handleSetFabMode(message.mode, message.tabId);
+      case MESSAGE_TYPES.previewElement:
+        return handlePreviewElement(message.payload, message.tabId);
+      case MESSAGE_TYPES.clearElementPreview:
+        return handleClearElementPreview(message.tabId);
+      case MESSAGE_TYPES.previewSizeChanged:
+        return handlePreviewSizeChanged(message.payload);
       default:
         return {
           ok: false,

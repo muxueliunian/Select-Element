@@ -8,16 +8,13 @@
   </head>
   <body>
     <div class="app-shell">
-      <header class="hero">
-        <div class="hero__text">
+      <div class="topbar">
+        <header class="hero">
           <h1>Select Element</h1>
-          <p class="hero__desc">采集、查看、备注、复制并导出网页元素快照。</p>
-        </div>
-        <div id="statusBadge" class="status-badge">未开始选择</div>
-      </header>
+          <div id="statusBadge" class="status-badge">未开始选择</div>
+        </header>
 
-      <section class="toolbar panel-card">
-        <div class="toolbar__row">
+        <div class="primary-actions">
           <button id="startButton" class="button button--primary" type="button">
             开始选择
           </button>
@@ -25,23 +22,7 @@
             停止选择
           </button>
         </div>
-        <div class="toolbar__row">
-          <button
-            id="copyCurrentButton"
-            class="button button--ghost"
-            type="button"
-          >
-            复制当前记录
-          </button>
-          <button id="exportButton" class="button button--ghost" type="button">
-            导出 JSON
-          </button>
-        </div>
-        <div class="toolbar__row">
-          <button id="clearButton" class="button button--danger" type="button">
-            清空记录
-          </button>
-        </div>
+
         <div class="toolbar__search">
           <input
             id="searchInput"
@@ -51,27 +32,44 @@
           />
           <div id="recordCount" class="record-count">共 0 条记录</div>
         </div>
-        <div class="shortcut-bar">
-          <span class="shortcut-label">快捷键</span>
-          <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>S</kbd> 开始选择</span>
-          <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>X</kbd> 停止选择</span>
-          <span class="shortcut-item"><kbd>Esc</kbd> 退出</span>
+
+        <div class="secondary-actions">
+          <button id="copyCurrentButton" class="button button--ghost" type="button">
+            复制当前
+          </button>
+          <button id="exportButton" class="button button--ghost" type="button">
+            导出 JSON
+          </button>
+          <button id="clearButton" class="button button--danger" type="button">
+            清空记录
+          </button>
         </div>
-        <div class="fab-mode-bar">
-          <span class="fab-mode-label">悬浮球</span>
-          <div class="seg-control" id="fabModeControl">
-            <button class="seg-btn is-active" type="button" data-fab-mode="off">关闭</button>
-            <button class="seg-btn" type="button" data-fab-mode="current-tab">仅当前页</button>
-            <button class="seg-btn" type="button" data-fab-mode="all-tabs">所有网页</button>
+
+        <details class="settings-fold">
+          <summary>快捷键与悬浮球设置</summary>
+          <div class="settings-fold__body">
+            <div class="shortcut-bar">
+              <span class="shortcut-label">快捷键</span>
+              <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>S</kbd> 开始选择</span>
+              <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>X</kbd> 停止选择</span>
+              <span class="shortcut-item"><kbd>Esc</kbd> 退出</span>
+            </div>
+            <div class="fab-mode-bar">
+              <span class="fab-mode-label">悬浮球</span>
+              <div class="seg-control" id="fabModeControl">
+                <button class="seg-btn is-active" type="button" data-fab-mode="off">关闭</button>
+                <button class="seg-btn" type="button" data-fab-mode="current-tab">仅当前页</button>
+                <button class="seg-btn" type="button" data-fab-mode="all-tabs">所有网页</button>
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
+        </details>
+      </div>
 
       <main class="layout">
-        <section class="panel-card panel-section">
+        <section class="panel-card panel-section list-section">
           <div class="section-heading">
             <h2>记录列表</h2>
-            <p>点击记录卡片查看完整结构化信息</p>
           </div>
           <div id="listContainer" class="record-list" aria-live="polite"></div>
         </section>
@@ -79,7 +77,6 @@
         <section class="panel-card panel-section detail-panel">
           <div class="section-heading">
             <h2>详细信息</h2>
-            <p>支持复制 JSON / 提示文本 / Markdown、删除记录和编辑备注</p>
           </div>
 
           <div id="detailEmpty" class="detail-empty">
@@ -101,6 +98,13 @@
                   复制提示文本
                 </button>
                 <button
+                  id="copyAgentPromptButton"
+                  class="button button--ghost"
+                  type="button"
+                >
+                  复制预制提示词
+                </button>
+                <button
                   id="copyMarkdownButton"
                   class="button button--secondary"
                   type="button"
@@ -114,6 +118,45 @@
                 >
                   删除当前记录
                 </button>
+              </div>
+            </div>
+
+            <div class="preview-panel" id="previewPanel">
+              <div class="preview-heading">尺寸预览</div>
+
+              <div class="preview-inputs">
+                <label class="preview-field">
+                  <span>宽度</span>
+                  <input id="previewWidth" type="text" placeholder="如 300 或 50%" />
+                </label>
+                <label class="preview-field">
+                  <span>高度</span>
+                  <input id="previewHeight" type="text" placeholder="如 200 或 auto" />
+                </label>
+              </div>
+              <div class="preview-actions">
+                <button id="previewButton" class="button button--primary" type="button">
+                  预览
+                </button>
+                <button id="restoreButton" class="button button--secondary" type="button">
+                  恢复
+                </button>
+              </div>
+              <div class="style-prompt-bar">
+                <span class="style-prompt-label">快速修改提示词</span>
+                <div class="style-prompt-actions">
+                  <select id="styleChangeSelect" class="style-select">
+                    <option value="resize">改宽高</option>
+                    <option value="spacing">改间距</option>
+                    <option value="borderRadius">改圆角</option>
+                    <option value="fontSize">改字号</option>
+                    <option value="color">改颜色</option>
+                    <option value="layout">改布局</option>
+                  </select>
+                  <button id="copyStylePromptButton" class="button button--ghost" type="button">
+                    复制修改提示词
+                  </button>
+                </div>
               </div>
             </div>
 
