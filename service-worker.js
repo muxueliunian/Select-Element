@@ -348,43 +348,32 @@ async function handleSetFabMode(mode, requestedTabId) {
   return { ok: true, fabMode: saved };
 }
 
-async function handlePreviewElement(payload, requestedTabId) {
-  const tab = await resolveTargetTab(requestedTabId);
-  if (!tab || typeof tab.id !== "number") {
-    throw new Error("未找到目标标签页。");
+function getPageKey(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  } catch (error) {
+    return String(url || "");
   }
-  await ensureContentScript(tab.id);
-  const response = await safeSendTabMessage(tab.id, {
-    type: MESSAGE_TYPES.previewElement,
-    payload,
-  });
-  if (!response || response.ok === false) {
-    throw new Error((response && response.error) || "预览失败。");
-  }
-  return response;
 }
 
-async function handleClearElementPreview(requestedTabId) {
+async function handleHighlightElement(record, requestedTabId) {
   const tab = await resolveTargetTab(requestedTabId);
-  if (!tab || typeof tab.id !== "number") {
-    throw new Error("未找到目标标签页。");
+  if (!tab || typeof tab.id !== "number" || !isSupportedUrl(tab.url)) {
+    return { ok: false, error: "当前页面不支持定位元素。" };
   }
+
+  // 不是在当前页面采集的记录不去定位，避免同名选择器误高亮别的元素
+  if (!record || getPageKey(record.url) !== getPageKey(tab.url)) {
+    return { ok: false, error: "该记录不是在当前页面采集的。" };
+  }
+
   await ensureContentScript(tab.id);
   const response = await safeSendTabMessage(tab.id, {
-    type: MESSAGE_TYPES.clearElementPreview,
+    type: MESSAGE_TYPES.highlightElement,
+    record,
   });
-  if (!response || response.ok === false) {
-    throw new Error((response && response.error) || "恢复失败。");
-  }
-  return response;
-}
-
-async function handlePreviewSizeChanged(payload) {
-  await safeBroadcast({
-    type: MESSAGE_TYPES.previewSizeChanged,
-    payload,
-  });
-  return { ok: true };
+  return response || { ok: false, error: "定位元素失败。" };
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
@@ -487,12 +476,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return handleGetPanelData();
       case MESSAGE_TYPES.setFabMode:
         return handleSetFabMode(message.mode, message.tabId);
-      case MESSAGE_TYPES.previewElement:
-        return handlePreviewElement(message.payload, message.tabId);
-      case MESSAGE_TYPES.clearElementPreview:
-        return handleClearElementPreview(message.tabId);
-      case MESSAGE_TYPES.previewSizeChanged:
-        return handlePreviewSizeChanged(message.payload);
+      case MESSAGE_TYPES.highlightElement:
+        return handleHighlightElement(message.record, message.tabId);
       default:
         return {
           ok: false,

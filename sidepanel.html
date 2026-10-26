@@ -7,179 +7,108 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <div class="topbar">
-        <header class="hero">
-          <h1>Select Element</h1>
-          <div id="statusBadge" class="status-badge">未开始选择</div>
-        </header>
-
-        <div class="primary-actions">
-          <button id="startButton" class="button button--primary" type="button">
-            开始选择
-          </button>
-          <button id="stopButton" class="button button--secondary" type="button">
-            停止选择
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar__row">
+          <h1 class="brand">Select Element</h1>
+          <button
+            id="settingsButton"
+            class="icon-button"
+            type="button"
+            popovertarget="settingsPopover"
+            title="设置"
+            aria-label="设置"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
           </button>
         </div>
 
-        <div class="toolbar__search">
+        <button id="toggleButton" class="button button--primary button--block" type="button">
+          开始选择
+        </button>
+
+        <div class="search-row">
           <input
             id="searchInput"
-            class="search-input"
+            class="input"
             type="search"
-            placeholder="搜索标签、文本、页面标题或备注"
+            placeholder="搜索元素、文本、页面或需求"
           />
-          <div id="recordCount" class="record-count">共 0 条记录</div>
+          <button
+            id="menuButton"
+            class="icon-button"
+            type="button"
+            popovertarget="moreMenu"
+            title="更多操作"
+            aria-label="更多操作"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.5" />
+              <circle cx="12" cy="12" r="1.5" />
+              <circle cx="19" cy="12" r="1.5" />
+            </svg>
+          </button>
         </div>
+      </header>
 
-        <div class="secondary-actions">
-          <button id="copyCurrentButton" class="button button--ghost" type="button">
-            复制当前
-          </button>
-          <button id="exportButton" class="button button--ghost" type="button">
-            导出 JSON
-          </button>
-          <button id="clearButton" class="button button--danger" type="button">
-            清空记录
-          </button>
-        </div>
-
-        <details class="settings-fold">
-          <summary>快捷键与悬浮球设置</summary>
-          <div class="settings-fold__body">
-            <div class="shortcut-bar">
-              <span class="shortcut-label">快捷键</span>
-              <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>S</kbd> 开始选择</span>
-              <span class="shortcut-item"><kbd>Alt</kbd><kbd>Shift</kbd><kbd>X</kbd> 停止选择</span>
-              <span class="shortcut-item"><kbd>Esc</kbd> 退出</span>
-            </div>
-            <div class="fab-mode-bar">
-              <span class="fab-mode-label">悬浮球</span>
-              <div class="seg-control" id="fabModeControl">
-                <button class="seg-btn is-active" type="button" data-fab-mode="off">关闭</button>
-                <button class="seg-btn" type="button" data-fab-mode="current-tab">仅当前页</button>
-                <button class="seg-btn" type="button" data-fab-mode="all-tabs">所有网页</button>
-              </div>
-            </div>
-          </div>
-        </details>
+      <div class="list-header">
+        <span id="recordCount">0 条记录</span>
       </div>
+      <main id="listContainer" class="record-list" aria-live="polite"></main>
 
-      <main class="layout">
-        <section class="panel-card panel-section list-section">
-          <div class="section-heading">
-            <h2>记录列表</h2>
-          </div>
-          <div id="listContainer" class="record-list" aria-live="polite"></div>
-        </section>
-
-        <section class="panel-card panel-section detail-panel">
-          <div class="section-heading">
-            <h2>详细信息</h2>
-          </div>
-
-          <div id="detailEmpty" class="detail-empty">
-            请选择一条记录查看详情
-          </div>
-
-          <div id="detailContent" class="detail-content" hidden>
-            <div class="detail-summary">
-              <div>
-                <div id="detailTitle" class="detail-title">未选择记录</div>
-                <div id="detailMeta" class="detail-meta"></div>
-              </div>
-              <div class="detail-actions">
-                <button
-                  id="copyLocatorButton"
-                  class="button button--ghost"
-                  type="button"
-                >
-                  复制提示文本
-                </button>
-                <button
-                  id="copyAgentPromptButton"
-                  class="button button--ghost"
-                  type="button"
-                >
-                  复制预制提示词
-                </button>
-                <button
-                  id="copyMarkdownButton"
-                  class="button button--secondary"
-                  type="button"
-                >
-                  复制 Markdown
-                </button>
-                <button
-                  id="deleteCurrentButton"
-                  class="button button--danger"
-                  type="button"
-                >
-                  删除当前记录
-                </button>
-              </div>
-            </div>
-
-            <div class="preview-panel" id="previewPanel">
-              <div class="preview-heading">尺寸预览</div>
-
-              <div class="preview-inputs">
-                <label class="preview-field">
-                  <span>宽度</span>
-                  <input id="previewWidth" type="text" placeholder="如 300 或 50%" />
-                </label>
-                <label class="preview-field">
-                  <span>高度</span>
-                  <input id="previewHeight" type="text" placeholder="如 200 或 auto" />
-                </label>
-              </div>
-              <div class="preview-actions">
-                <button id="previewButton" class="button button--primary" type="button">
-                  预览
-                </button>
-                <button id="restoreButton" class="button button--secondary" type="button">
-                  恢复
-                </button>
-              </div>
-              <div class="style-prompt-bar">
-                <span class="style-prompt-label">快速修改提示词</span>
-                <div class="style-prompt-actions">
-                  <select id="styleChangeSelect" class="style-select">
-                    <option value="resize">改宽高</option>
-                    <option value="spacing">改间距</option>
-                    <option value="borderRadius">改圆角</option>
-                    <option value="fontSize">改字号</option>
-                    <option value="color">改颜色</option>
-                    <option value="layout">改布局</option>
-                  </select>
-                  <button id="copyStylePromptButton" class="button button--ghost" type="button">
-                    复制修改提示词
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <label class="note-field" for="noteInput">
-              <span>备注</span>
-              <textarea
-                id="noteInput"
-                placeholder="可为当前记录补充备注，便于后续检索"
-              ></textarea>
-            </label>
-            <div class="note-actions">
-              <button id="saveNoteButton" class="button button--ghost" type="button">
-                保存备注
-              </button>
-            </div>
-
-            <pre id="jsonViewer" class="json-viewer"></pre>
-          </div>
-        </section>
-      </main>
+      <section id="composer" class="composer" hidden>
+        <div class="composer__target">
+          <span id="composerKind" class="chip"></span>
+          <code id="composerSelector" class="mono"></code>
+        </div>
+        <textarea
+          id="noteInput"
+          class="input composer__input"
+          rows="3"
+          placeholder="写下想怎么改，例如：宽度改成 200px，和右边的按钮对齐（自动保存）"
+        ></textarea>
+        <button id="copyButton" class="button button--primary button--block" type="button">
+          复制给 AI
+        </button>
+        <details class="prompt-preview">
+          <summary>预览将复制的内容</summary>
+          <pre id="promptViewer" class="prompt-preview__body"></pre>
+        </details>
+      </section>
     </div>
 
-    <div id="toast" class="toast" hidden></div>
+    <div id="settingsPopover" class="popover" popover>
+      <div class="popover__section">
+        <div class="popover__label">悬浮球</div>
+        <div class="seg-control" id="fabModeControl">
+          <button class="seg-btn is-active" type="button" data-fab-mode="off">关闭</button>
+          <button class="seg-btn" type="button" data-fab-mode="current-tab">仅当前页</button>
+          <button class="seg-btn" type="button" data-fab-mode="all-tabs">所有网页</button>
+        </div>
+      </div>
+      <div class="popover__section">
+        <div class="popover__label">快捷键</div>
+        <ul id="shortcutList" class="shortcut-list"></ul>
+        <button id="editShortcutsButton" class="link-button" type="button">修改快捷键</button>
+      </div>
+    </div>
+
+    <div id="moreMenu" class="popover menu" popover>
+      <button id="exportButton" class="menu__item" type="button">导出 JSON</button>
+      <button id="clearButton" class="menu__item menu__item--danger" type="button">
+        清空全部记录
+      </button>
+    </div>
+
+    <div id="toast" class="toast" hidden>
+      <span id="toastText"></span>
+      <button id="toastAction" class="toast__action" type="button" hidden>撤销</button>
+    </div>
 
     <script src="utils.js"></script>
     <script src="sidepanel.js"></script>

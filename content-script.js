@@ -203,13 +203,10 @@
     pointerY: 0,
   };
 
-  const previewState = {
-    active: false,
+  const highlightState = {
     element: null,
-    originalStyle: null,
     overlayEl: null,
-    handleHost: null,
-    dragState: null,
+    hideTimer: 0,
     trackHandler: null,
     trackRafId: 0,
   };
@@ -256,18 +253,8 @@
       return true;
     }
 
-    if (message.type === MESSAGE_TYPES.previewElement) {
-      const result = applyPreviewToElement(message.payload.record, {
-        width: message.payload.width,
-        height: message.payload.height,
-      });
-      sendResponse(result);
-      return true;
-    }
-
-    if (message.type === MESSAGE_TYPES.clearElementPreview) {
-      const result = clearPreview();
-      sendResponse(result);
+    if (message.type === MESSAGE_TYPES.highlightElement) {
+      sendResponse(highlightRecordElement(message.record));
       return true;
     }
 
@@ -308,57 +295,63 @@
     return null;
   }
 
-  function createPreviewOverlay(element) {
-    let overlay = previewState.overlayEl;
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.className = "__esi-preview-highlight";
-      document.body.appendChild(overlay);
-      previewState.overlayEl = overlay;
+  // 侧边栏点击记录时，在页面中短暂高亮对应元素，帮助确认是哪一个
+  const HIGHLIGHT_DURATION_MS = 1600;
+
+  function highlightRecordElement(record) {
+    const element = resolveElementFromRecord(record);
+    if (!element) {
+      return {
+        ok: false,
+        error: "页面中找不到该元素，可能页面已刷新或 DOM 已变化。",
+      };
     }
 
-    updatePreviewOverlayPosition(element);
-    createDragHandles(element);
-    startPreviewTracking();
-    return overlay;
+    clearHighlight();
+
+    const rect = element.getBoundingClientRect();
+    const isOffscreen =
+      rect.bottom < 0 ||
+      rect.top > window.innerHeight ||
+      rect.right < 0 ||
+      rect.left > window.innerWidth;
+    if (isOffscreen) {
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "__esi-locate-highlight";
+    document.body.appendChild(overlay);
+    highlightState.overlayEl = overlay;
+    highlightState.element = element;
+
+    updateHighlightPosition();
+    startHighlightTracking();
+    highlightState.hideTimer = window.setTimeout(clearHighlight, HIGHLIGHT_DURATION_MS);
+    return { ok: true };
   }
 
-  // 预览高亮框/手柄使用 position:fixed + getBoundingClientRect，页面滚动或窗口缩放后
-  // 会与目标元素错位。激活期间监听 scroll/resize（rAF 节流）实时重定位。
-  function startPreviewTracking() {
-    if (previewState.trackHandler) {
-      return;
-    }
-    previewState.trackHandler = () => {
-      if (previewState.trackRafId) {
+  // 高亮框使用 position:fixed，页面滚动或窗口缩放时需要跟随元素重定位（rAF 节流）
+  function startHighlightTracking() {
+    highlightState.trackHandler = () => {
+      if (highlightState.trackRafId) {
         return;
       }
-      previewState.trackRafId = requestAnimationFrame(() => {
-        previewState.trackRafId = 0;
-        if (previewState.active && previewState.element) {
-          updatePreviewOverlayPosition(previewState.element);
-        }
+      highlightState.trackRafId = requestAnimationFrame(() => {
+        highlightState.trackRafId = 0;
+        updateHighlightPosition();
       });
     };
-    window.addEventListener("scroll", previewState.trackHandler, true);
-    window.addEventListener("resize", previewState.trackHandler, true);
+    window.addEventListener("scroll", highlightState.trackHandler, true);
+    window.addEventListener("resize", highlightState.trackHandler, true);
   }
 
-  function stopPreviewTracking() {
-    if (previewState.trackHandler) {
-      window.removeEventListener("scroll", previewState.trackHandler, true);
-      window.removeEventListener("resize", previewState.trackHandler, true);
-      previewState.trackHandler = null;
+  function updateHighlightPosition() {
+    const overlay = highlightState.overlayEl;
+    const element = highlightState.element;
+    if (!overlay || !element) {
+      return;
     }
-    if (previewState.trackRafId) {
-      cancelAnimationFrame(previewState.trackRafId);
-      previewState.trackRafId = 0;
-    }
-  }
-
-  function updatePreviewOverlayPosition(element) {
-    const overlay = previewState.overlayEl;
-    if (!overlay) return;
 
     const rect = element.getBoundingClientRect();
     overlay.style.cssText = [
@@ -375,258 +368,27 @@
       "width:" + rect.width + "px",
       "height:" + rect.height + "px",
     ].join(";");
-
-    // Update handle positions too
-    if (previewState.handleHost) {
-      positionDragHandles(rect);
-    }
   }
 
-  const DRAG_HANDLE_STYLES = `
-    :host {
-      all: initial;
-      position: fixed;
-      z-index: 2147483646;
-      pointer-events: none;
-      display: block;
+  function clearHighlight() {
+    clearTimeout(highlightState.hideTimer);
+    highlightState.hideTimer = 0;
+
+    if (highlightState.trackHandler) {
+      window.removeEventListener("scroll", highlightState.trackHandler, true);
+      window.removeEventListener("resize", highlightState.trackHandler, true);
+      highlightState.trackHandler = null;
     }
-    .handle {
-      position: fixed;
-      width: 10px;
-      height: 10px;
-      background: #fff;
-      border: 2px solid rgba(255,152,0,0.9);
-      border-radius: 2px;
-      pointer-events: auto;
-      z-index: 2147483646;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+    if (highlightState.trackRafId) {
+      cancelAnimationFrame(highlightState.trackRafId);
+      highlightState.trackRafId = 0;
     }
-    .handle-e, .handle-w { cursor: ew-resize; }
-    .handle-s, .handle-n { cursor: ns-resize; }
-    .handle-se { cursor: nwse-resize; }
-    .handle-sw { cursor: nesw-resize; }
-    .handle-ne { cursor: nesw-resize; }
-    .handle-nw { cursor: nwse-resize; }
-  `;
-
-  function createDragHandles(element) {
-    removeDragHandles();
-
-    const host = document.createElement("div");
-    host.id = "__esi-drag-handles";
-    const shadow = host.attachShadow({ mode: "closed" });
-
-    const style = document.createElement("style");
-    style.textContent = DRAG_HANDLE_STYLES;
-    shadow.appendChild(style);
-
-    const dirs = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
-    dirs.forEach((dir) => {
-      const h = document.createElement("div");
-      h.className = "handle handle-" + dir;
-      h.dataset.dir = dir;
-      h.addEventListener("mousedown", onHandleMouseDown);
-      shadow.appendChild(h);
-    });
-
-    document.body.appendChild(host);
-    previewState.handleHost = host;
-    previewState.handleShadow = shadow;
-
-    const rect = element.getBoundingClientRect();
-    positionDragHandles(rect);
+    if (highlightState.overlayEl) {
+      highlightState.overlayEl.remove();
+      highlightState.overlayEl = null;
+    }
+    highlightState.element = null;
   }
-
-  function positionDragHandles(rect) {
-    const shadow = previewState.handleShadow;
-    if (!shadow) return;
-
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const map = {
-      n:  { left: cx - 5, top: rect.top - 5 },
-      s:  { left: cx - 5, top: rect.top + rect.height - 5 },
-      e:  { left: rect.left + rect.width - 5, top: cy - 5 },
-      w:  { left: rect.left - 5, top: cy - 5 },
-      ne: { left: rect.left + rect.width - 5, top: rect.top - 5 },
-      nw: { left: rect.left - 5, top: rect.top - 5 },
-      se: { left: rect.left + rect.width - 5, top: rect.top + rect.height - 5 },
-      sw: { left: rect.left - 5, top: rect.top + rect.height - 5 },
-    };
-
-    shadow.querySelectorAll(".handle").forEach((h) => {
-      const pos = map[h.dataset.dir];
-      if (pos) {
-        h.style.left = pos.left + "px";
-        h.style.top = pos.top + "px";
-      }
-    });
-  }
-
-  function removeDragHandles() {
-    if (previewState.handleHost) {
-      previewState.handleHost.remove();
-      previewState.handleHost = null;
-      previewState.handleShadow = null;
-    }
-  }
-
-  function onHandleMouseDown(e) {
-    if (!previewState.active || !previewState.element) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    const el = previewState.element;
-    const rect = el.getBoundingClientRect();
-    previewState.dragState = {
-      dir: e.currentTarget.dataset.dir,
-      startX: e.clientX,
-      startY: e.clientY,
-      startWidth: rect.width,
-      startHeight: rect.height,
-      startLeft: rect.left,
-      startTop: rect.top,
-    };
-
-    document.addEventListener("mousemove", onHandleMouseMove, true);
-    document.addEventListener("mouseup", onHandleMouseUp, true);
-  }
-
-  function onHandleMouseMove(e) {
-    const ds = previewState.dragState;
-    if (!ds || !previewState.element) return;
-    e.preventDefault();
-
-    const el = previewState.element;
-    const dx = e.clientX - ds.startX;
-    const dy = e.clientY - ds.startY;
-    const dir = ds.dir;
-
-    let newWidth = ds.startWidth;
-    let newHeight = ds.startHeight;
-
-    if (dir.includes("e")) newWidth = Math.max(20, ds.startWidth + dx);
-    if (dir.includes("w")) newWidth = Math.max(20, ds.startWidth - dx);
-    if (dir.includes("s")) newHeight = Math.max(20, ds.startHeight + dy);
-    if (dir.includes("n")) newHeight = Math.max(20, ds.startHeight - dy);
-
-    el.style.width = Math.round(newWidth) + "px";
-    el.style.height = Math.round(newHeight) + "px";
-
-    updatePreviewOverlayPosition(el);
-  }
-
-  function onHandleMouseUp(e) {
-    document.removeEventListener("mousemove", onHandleMouseMove, true);
-    document.removeEventListener("mouseup", onHandleMouseUp, true);
-
-    if (!previewState.element) {
-      previewState.dragState = null;
-      return;
-    }
-
-    const computed = getComputedStyle(previewState.element);
-    const width = computed.width;
-    const height = computed.height;
-
-    previewState.dragState = null;
-
-    // Notify sidepanel of new size
-    try {
-      chrome.runtime.sendMessage({
-        type: MESSAGE_TYPES.previewSizeChanged,
-        payload: { width, height },
-      });
-    } catch (err) {
-      // sidepanel might be closed
-    }
-  }
-
-  function removePreviewOverlay() {
-    stopPreviewTracking();
-    if (previewState.overlayEl) {
-      previewState.overlayEl.remove();
-      previewState.overlayEl = null;
-    }
-    removeDragHandles();
-  }
-
-  function applyPreviewToElement(record, size) {
-    // Clear any existing preview first
-    if (previewState.active) {
-      clearPreview();
-    }
-
-    const element = resolveElementFromRecord(record);
-    if (!element) {
-      return {
-        ok: false,
-        error: "无法定位目标元素，可能页面已刷新或 DOM 已变化。",
-      };
-    }
-
-    // Detect inline elements where width/height won't take effect
-    const display = getComputedStyle(element).display;
-    const isInline = display === "inline";
-
-    previewState.originalStyle = element.style.cssText;
-    previewState.element = element;
-    previewState.active = true;
-
-    if (size.width) {
-      element.style.width = size.width;
-    }
-    if (size.height) {
-      element.style.height = size.height;
-    }
-
-    createPreviewOverlay(element);
-
-    if (isInline && (size.width || size.height)) {
-      return {
-        ok: true,
-        warning: "目标元素是 inline 元素，宽高设置可能不会生效。建议先改为 inline-block 或 block。",
-      };
-    }
-
-    return { ok: true };
-  }
-
-  function clearPreview() {
-    if (!previewState.active) {
-      return { ok: true };
-    }
-
-    document.removeEventListener("mousemove", onHandleMouseMove, true);
-    document.removeEventListener("mouseup", onHandleMouseUp, true);
-    previewState.dragState = null;
-
-    if (previewState.element) {
-      previewState.element.style.cssText = previewState.originalStyle || "";
-    }
-
-    removePreviewOverlay();
-
-    previewState.active = false;
-    previewState.element = null;
-    previewState.originalStyle = null;
-
-    return { ok: true };
-  }
-
-  // Clean up preview on visibility change (tab switch)
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden && previewState.active) {
-      clearPreview();
-    }
-  });
-
-  // ESC exits preview mode
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && previewState.active && !state.active) {
-      clearPreview();
-    }
-  }, true);
 
   function startSelection() {
     if (state.active) {
@@ -897,7 +659,7 @@
         .then(() => {
           const promptText = buildPromptText(snapshot);
           return copyToClipboard(promptText).then(() => {
-            showToast("已采集，预制提示词已复制到剪贴板");
+            showToast("已采集，元素信息已复制到剪贴板");
           });
         })
         .catch((error) => {
@@ -1006,7 +768,7 @@
   // ── 提示文本生成 & 剪贴板 ───────────────────────────────────────────────────
 
   function buildPromptText(snapshot) {
-    return sharedUtils.buildAgentTaskPrompt(snapshot);
+    return sharedUtils.buildAgentPrompt(snapshot);
   }
 
   async function copyToClipboard(text) {

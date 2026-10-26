@@ -1,6 +1,9 @@
 const utils = globalThis.ElementSnapshotUtils;
 const MESSAGE_TYPES = utils.MESSAGE_TYPES;
 
+const NOTE_SAVE_DELAY_MS = 500;
+const UNDO_TOAST_MS = 5000;
+
 const state = {
   records: [],
   filteredRecords: [],
@@ -8,11 +11,16 @@ const state = {
   searchKeyword: "",
   selectionState: utils.DEFAULT_SELECTION_STATE,
   fabMode: "off",
+  // 新采集的记录在下一次刷新时自动选中
+  pendingSelectId: "",
+  // 底部编辑框当前对应的记录；只有切换记录时才回填输入框，避免打断正在输入的内容
+  composerRecordId: "",
 };
 
 const refs = {};
 let toastTimer = 0;
 let searchDebounceTimer = 0;
+let pendingNoteSave = null;
 
 // 搜索索引按记录对象缓存：记录数据不可变，输入框每次按键无需对全部记录重算索引。
 // 记录在 refreshAll 时会被替换为新对象，WeakMap 自动随旧对象回收。
@@ -30,77 +38,75 @@ function getRecordSearchIndex(record) {
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
   bindEvents();
+  renderShortcuts();
   refreshAll();
 });
 
 function cacheElements() {
-  refs.statusBadge = document.getElementById("statusBadge");
-  refs.startButton = document.getElementById("startButton");
-  refs.stopButton = document.getElementById("stopButton");
-  refs.copyCurrentButton = document.getElementById("copyCurrentButton");
-  refs.exportButton = document.getElementById("exportButton");
-  refs.clearButton = document.getElementById("clearButton");
-  refs.searchInput = document.getElementById("searchInput");
-  refs.recordCount = document.getElementById("recordCount");
-  refs.listContainer = document.getElementById("listContainer");
-  refs.detailEmpty = document.getElementById("detailEmpty");
-  refs.detailContent = document.getElementById("detailContent");
-  refs.detailTitle = document.getElementById("detailTitle");
-  refs.detailMeta = document.getElementById("detailMeta");
-  refs.noteInput = document.getElementById("noteInput");
-  refs.saveNoteButton = document.getElementById("saveNoteButton");
-  refs.copyLocatorButton = document.getElementById("copyLocatorButton");
-  refs.copyAgentPromptButton = document.getElementById("copyAgentPromptButton");
-  refs.copyMarkdownButton = document.getElementById("copyMarkdownButton");
-  refs.deleteCurrentButton = document.getElementById("deleteCurrentButton");
-  refs.jsonViewer = document.getElementById("jsonViewer");
-  refs.toast = document.getElementById("toast");
-  refs.fabModeControl = document.getElementById("fabModeControl");
-  refs.previewPanel = document.getElementById("previewPanel");
-  refs.previewWidth = document.getElementById("previewWidth");
-  refs.previewHeight = document.getElementById("previewHeight");
-  refs.previewButton = document.getElementById("previewButton");
-  refs.restoreButton = document.getElementById("restoreButton");
-  refs.styleChangeSelect = document.getElementById("styleChangeSelect");
-  refs.copyStylePromptButton = document.getElementById("copyStylePromptButton");
+  [
+    "toggleButton",
+    "searchInput",
+    "settingsButton",
+    "settingsPopover",
+    "menuButton",
+    "moreMenu",
+    "exportButton",
+    "clearButton",
+    "recordCount",
+    "listContainer",
+    "composer",
+    "composerKind",
+    "composerSelector",
+    "noteInput",
+    "copyButton",
+    "promptViewer",
+    "fabModeControl",
+    "shortcutList",
+    "editShortcutsButton",
+    "toast",
+    "toastText",
+    "toastAction",
+  ].forEach((id) => {
+    refs[id] = document.getElementById(id);
+  });
 }
 
 function bindEvents() {
-  refs.startButton.addEventListener("click", handleStartSelection);
-  refs.stopButton.addEventListener("click", handleStopSelection);
-  refs.copyCurrentButton.addEventListener("click", handleCopyCurrentJson);
+  refs.toggleButton.addEventListener("click", handleToggleSelection);
+  refs.searchInput.addEventListener("input", handleSearchInput);
   refs.exportButton.addEventListener("click", handleExport);
   refs.clearButton.addEventListener("click", handleClearRecords);
-  refs.searchInput.addEventListener("input", handleSearchInput);
-  refs.saveNoteButton.addEventListener("click", handleSaveNote);
-  refs.copyLocatorButton.addEventListener("click", handleCopyLocator);
-  refs.copyAgentPromptButton.addEventListener("click", handleCopyAgentTaskPrompt);
-  refs.copyMarkdownButton.addEventListener("click", handleCopyMarkdown);
-  refs.deleteCurrentButton.addEventListener("click", handleDeleteCurrent);
-  refs.previewButton.addEventListener("click", handlePreview);
-  refs.restoreButton.addEventListener("click", handleRestore);
-  refs.copyStylePromptButton.addEventListener("click", handleCopyStylePrompt);
   refs.listContainer.addEventListener("click", handleListClick);
   refs.listContainer.addEventListener("keydown", handleListKeyDown);
+  refs.noteInput.addEventListener("input", handleNoteInput);
+  refs.noteInput.addEventListener("compositionend", handleNoteInput);
+  refs.noteInput.addEventListener("blur", flushNoteSave);
+  refs.copyButton.addEventListener("click", handleCopyPrompt);
   refs.fabModeControl.addEventListener("click", handleFabModeClick);
+  refs.editShortcutsButton.addEventListener("click", () => {
+    chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+  });
+  refs.toastAction.addEventListener("click", handleToastAction);
+  window.addEventListener("pagehide", flushNoteSave);
+
+  anchorPopover(refs.settingsPopover, refs.settingsButton);
+  anchorPopover(refs.moreMenu, refs.menuButton);
 
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || !message.type) {
       return;
     }
 
-    if (
-      message.type === MESSAGE_TYPES.recordsUpdated ||
-      message.type === MESSAGE_TYPES.selectionStateChanged
-    ) {
-      refreshAll(true);
+    if (message.type === MESSAGE_TYPES.recordsUpdated) {
+      const capturedId = message.payload && message.payload.lastCapturedId;
+      if (capturedId) {
+        state.pendingSelectId = capturedId;
+      }
+      refreshAll();
     }
 
-    if (message.type === MESSAGE_TYPES.previewSizeChanged && message.payload) {
-      const w = message.payload.width || "";
-      const h = message.payload.height || "";
-      refs.previewWidth.value = w.replace(/px$/, "");
-      refs.previewHeight.value = h.replace(/px$/, "");
+    if (message.type === MESSAGE_TYPES.selectionStateChanged) {
+      refreshAll();
     }
   });
 
@@ -110,23 +116,43 @@ function bindEvents() {
     }
 
     if (changes[utils.STORAGE_KEYS.records] || changes[utils.STORAGE_KEYS.selectionState]) {
-      refreshAll(true);
+      refreshAll();
     }
   });
 }
 
-async function refreshAll(preserveSelection) {
+// 弹出层打开前，贴着触发按钮的右下方定位
+function anchorPopover(popover, trigger) {
+  popover.addEventListener("beforetoggle", (event) => {
+    if (event.newState !== "open") {
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    popover.style.top = `${rect.bottom + 6}px`;
+    popover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+  });
+}
+
+async function refreshAll() {
   try {
     const panelData = await loadPanelData();
     state.records = Array.isArray(panelData.records) ? panelData.records : [];
     state.selectionState = panelData.selectionState || utils.DEFAULT_SELECTION_STATE;
     state.fabMode = panelData.fabMode || "off";
+
+    if (state.pendingSelectId && state.records.some((r) => r.id === state.pendingSelectId)) {
+      flushNoteSave();
+      state.selectedId = state.pendingSelectId;
+      state.pendingSelectId = "";
+      clearSearch();
+    }
+
     applyFilter();
-    ensureValidSelection(Boolean(preserveSelection));
+    ensureValidSelection();
     render();
   } catch (error) {
     console.error("刷新侧边栏失败：", error);
-    showToast(error && error.message ? error.message : "加载记录失败");
+    showToast(getErrorMessage(error, "加载记录失败"));
   }
 }
 
@@ -150,27 +176,23 @@ async function loadPanelData() {
   return { records, selectionState, fabMode };
 }
 
-function applyFilter() {
-  const keyword = state.searchKeyword.trim().toLowerCase();
-  if (!keyword) {
-    state.filteredRecords = state.records.slice();
-    return;
-  }
-
-  state.filteredRecords = state.records.filter((record) =>
-    getRecordSearchIndex(record).includes(keyword)
-  );
+function clearSearch() {
+  clearTimeout(searchDebounceTimer);
+  state.searchKeyword = "";
+  refs.searchInput.value = "";
 }
 
-function ensureValidSelection(preserveSelection) {
-  const filteredIds = new Set(state.filteredRecords.map((record) => record.id));
-  const hasCurrent =
-    preserveSelection && state.selectedId && filteredIds.has(state.selectedId);
+function applyFilter() {
+  const keyword = state.searchKeyword.trim().toLowerCase();
+  state.filteredRecords = keyword
+    ? state.records.filter((record) => getRecordSearchIndex(record).includes(keyword))
+    : state.records.slice();
+}
 
-  if (hasCurrent) {
+function ensureValidSelection() {
+  if (state.filteredRecords.some((record) => record.id === state.selectedId)) {
     return;
   }
-
   state.selectedId = state.filteredRecords[0] ? state.filteredRecords[0].id : "";
 }
 
@@ -179,357 +201,170 @@ function getSelectedRecord() {
 }
 
 function render() {
-  renderStatus();
+  renderToggle();
   renderRecordCount();
   renderList();
-  renderDetail();
-  updateActionStates();
+  renderComposer();
+  renderMenu();
   renderFabMode();
 }
 
-function renderStatus() {
-  refs.statusBadge.textContent =
-    (state.selectionState && state.selectionState.statusText) || "未开始选择";
+function renderToggle() {
+  const isSelecting = Boolean(state.selectionState && state.selectionState.isSelecting);
+  refs.toggleButton.textContent = isSelecting ? "选择中… 点击停止" : "开始选择";
+  refs.toggleButton.classList.toggle("button--active", isSelecting);
 }
 
 function renderRecordCount() {
   const total = state.records.length;
   const visible = state.filteredRecords.length;
   refs.recordCount.textContent =
-    state.searchKeyword.trim() === ""
-      ? `共 ${total} 条记录`
-      : `筛选后 ${visible} / ${total} 条记录`;
+    state.searchKeyword.trim() === "" ? `${total} 条记录` : `匹配 ${visible} / ${total} 条`;
 }
 
 function renderList() {
   const container = refs.listContainer;
+  const scrollTop = container.scrollTop;
   container.innerHTML = "";
 
   if (!state.records.length) {
     container.innerHTML =
-      '<div class="empty-state">尚未采集任何元素。<br />点击上方“开始选择”，再到网页中点选目标元素。</div>';
+      '<div class="empty-state">还没有记录。<br />点击“开始选择”，然后在网页中点一下目标元素。</div>';
     return;
   }
 
   if (!state.filteredRecords.length) {
-    container.innerHTML =
-      '<div class="empty-state">没有匹配的记录。<br />请尝试更换搜索关键词。</div>';
+    container.innerHTML = '<div class="empty-state">没有匹配的记录</div>';
     return;
   }
 
   const fragment = document.createDocumentFragment();
-
   state.filteredRecords.forEach((record) => {
-    const card = document.createElement("article");
-    card.className = `record-card${record.id === state.selectedId ? " is-selected" : ""}`;
-    card.tabIndex = 0;
-    card.dataset.recordId = record.id;
-
-    const timeText = utils.formatDateTime(record.timestamp);
-    const selector = escapeHtml(utils.getSelectorSummary(record) || "无可用选择器");
-    const excerpt = escapeHtml(utils.getTextExcerpt(record) || "无文本内容");
-    const meta = escapeHtml(utils.formatPosition(record.position));
-    const page = escapeHtml(utils.getPageSummary(record));
-    const tagName = escapeHtml(record.tagName || "unknown");
-
-    card.innerHTML = `
-      <div class="record-card__header">
-        <span class="tag-chip">${tagName}</span>
-        <button class="record-delete" type="button" data-delete-id="${record.id}">删除</button>
-      </div>
-      <div class="record-selector">${selector}</div>
-      <div class="record-text">${excerpt}</div>
-      <div class="record-meta">${meta}</div>
-      <div class="record-page">${page}</div>
-      <div class="record-card__footer">
-        <span class="record-time">${escapeHtml(timeText)}</span>
-        <span class="record-time">${record.isVisible ? "可见" : "不可见"}</span>
-      </div>
-    `;
-    fragment.appendChild(card);
+    fragment.appendChild(createRecordCard(record));
   });
-
   container.appendChild(fragment);
+  container.scrollTop = scrollTop;
 }
 
-function renderDetail() {
+function createRecordCard(record) {
+  const card = document.createElement("article");
+  card.className = `record-card${record.id === state.selectedId ? " is-selected" : ""}`;
+  card.tabIndex = 0;
+  card.dataset.recordId = record.id;
+
+  const excerpt = utils.getTextExcerpt(record);
+  const flags = [
+    record.note ? '<span class="flag">已写需求</span>' : "",
+    record.isVisible === false ? '<span class="flag flag--muted">不可见</span>' : "",
+  ].join("");
+
+  card.innerHTML = `
+    <div class="record-card__top">
+      <span class="chip">${escapeHtml(utils.getElementKind(record))}</span>
+      <code class="record-selector mono">${escapeHtml(utils.getSelectorSummary(record) || record.tagName || "")}</code>
+      <button class="record-delete" type="button" data-delete-id="${escapeHtml(record.id)}" title="删除" aria-label="删除">×</button>
+    </div>
+    ${excerpt ? `<div class="record-text">${escapeHtml(excerpt)}</div>` : ""}
+    <div class="record-meta">
+      <span class="record-meta__page">${escapeHtml(utils.getPageSummary(record))}</span>
+      <span class="record-meta__time">· ${escapeHtml(utils.formatDateTime(record.timestamp))}</span>
+      ${flags}
+    </div>
+  `;
+  return card;
+}
+
+function renderComposer() {
   const record = getSelectedRecord();
+  refs.composer.hidden = !record;
 
   if (!record) {
-    refs.detailEmpty.hidden = false;
-    refs.detailContent.hidden = true;
-    refs.noteInput.value = "";
-    refs.jsonViewer.textContent = "";
-    refs.detailTitle.textContent = "未选择记录";
-    refs.detailMeta.textContent = "";
+    state.composerRecordId = "";
     return;
   }
 
-  refs.detailEmpty.hidden = true;
-  refs.detailContent.hidden = false;
+  refs.composerKind.textContent = utils.getElementKind(record);
+  refs.composerSelector.textContent = utils.getSelectorSummary(record) || record.tagName || "";
 
-  refs.detailTitle.textContent = record.elementSummary || `${record.tagName || ""} 元素`;
-  const frameworkMeta = getFrameworkMetaLine(record);
-  refs.detailMeta.innerHTML = [
-    `页面：${escapeHtml(utils.getPageSummary(record))}`,
-    `选择器：${escapeHtml(utils.getSelectorSummary(record) || "无")}`,
-    `时间：${escapeHtml(utils.formatDateTime(record.timestamp))}`,
-    frameworkMeta ? escapeHtml(frameworkMeta) : "",
-  ]
-    .filter(Boolean)
-    .join("<br />");
+  // 切换记录时回填；同一条记录在输入期间不覆盖，避免吞字或打断输入法
+  if (state.composerRecordId !== record.id || document.activeElement !== refs.noteInput) {
+    if (!pendingNoteSave || pendingNoteSave.recordId !== record.id) {
+      refs.noteInput.value = record.note || "";
+    }
+    state.composerRecordId = record.id;
+  }
 
-  refs.noteInput.value = record.note || "";
-  refs.jsonViewer.textContent = JSON.stringify(record, null, 2);
+  renderPromptPreview();
 }
 
-function updateActionStates() {
-  const selectedRecord = getSelectedRecord();
+function renderPromptPreview() {
+  refs.promptViewer.textContent = buildCurrentPrompt();
+}
+
+function buildCurrentPrompt() {
+  const record = getSelectedRecord();
+  return record ? utils.buildAgentPrompt({ ...record, note: refs.noteInput.value }) : "";
+}
+
+function renderMenu() {
   const hasRecords = state.records.length > 0;
-  refs.copyCurrentButton.disabled = !selectedRecord;
   refs.exportButton.disabled = !hasRecords;
   refs.clearButton.disabled = !hasRecords;
-  refs.copyLocatorButton.disabled = !selectedRecord;
-  refs.copyAgentPromptButton.disabled = !selectedRecord;
-  refs.copyMarkdownButton.disabled = !selectedRecord;
-  refs.deleteCurrentButton.disabled = !selectedRecord;
-  refs.saveNoteButton.disabled = !selectedRecord;
-  refs.previewButton.disabled = !selectedRecord;
-  refs.restoreButton.disabled = !selectedRecord;
-  refs.copyStylePromptButton.disabled = !selectedRecord;
 }
 
-async function handleStartSelection() {
-  try {
-    const tabId = await getCurrentTabId();
-    const response = await chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.startSelection,
-      tabId,
-    });
-
-    if (!response || !response.ok) {
-      throw new Error((response && response.error) || "开启选择模式失败");
-    }
-
-    await refreshAll(true);
-    showToast("选择模式已开启");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "开启选择模式失败");
-  }
+function renderFabMode() {
+  refs.fabModeControl.querySelectorAll("[data-fab-mode]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.fabMode === state.fabMode);
+  });
 }
 
-async function handleStopSelection() {
-  try {
-    const tabId = await getCurrentTabId();
-    const response = await chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.stopSelection,
-      tabId,
-    });
-
-    if (!response || !response.ok) {
-      throw new Error((response && response.error) || "停止选择失败");
-    }
-
-    await refreshAll(true);
-    showToast("已停止选择");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "停止选择失败");
-  }
-}
-
-async function handleCopyCurrentJson() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  try {
-    await copyText(JSON.stringify(record, null, 2));
-    showToast("当前记录 JSON 已复制");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "复制失败");
-  }
-}
-
-async function handleCopyMarkdown() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  try {
-    await copyText(utils.buildRecordMarkdown(record));
-    showToast("当前记录 Markdown 已复制");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "复制失败");
-  }
-}
-
-async function handleCopyLocator() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  try {
-    await copyText(utils.buildCursorPromptText(record));
-    showToast("提示文本已复制");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "复制失败");
-  }
-}
-
-async function handleCopyAgentTaskPrompt() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  try {
-    await copyText(utils.buildAgentTaskPrompt(record));
-    showToast("预制提示词已复制");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "复制失败");
-  }
-}
-
-function normalizeSize(value) {
-  const v = (value || "").trim();
-  if (!v) return "";
-  if (v === "auto") return v;
-  if (/^[\d.]+$/.test(v)) return v + "px";
-  return v;
-}
-
-function tryClearPreview() {
-  getCurrentTabId().then((tabId) => {
-    chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.clearElementPreview,
-      tabId,
-    }).catch(() => {});
-  }).catch(() => {});
-}
-
-function autoHighlightSelected() {
-  const record = getSelectedRecord();
-  if (!record) return;
-  getCurrentTabId().then((tabId) => {
-    chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.previewElement,
-      payload: { record, width: "", height: "" },
-      tabId,
-    }).catch(() => {});
-  }).catch(() => {});
-}
-
-async function handlePreview() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  const width = normalizeSize(refs.previewWidth.value);
-  const height = normalizeSize(refs.previewHeight.value);
-
-  if (!width && !height) {
-    showToast("请输入宽度或高度");
-    return;
-  }
-
-  try {
-    const tabId = await getCurrentTabId();
-    const response = await chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.previewElement,
-      payload: { record, width, height },
-      tabId,
-    });
-
-    if (!response || !response.ok) {
-      throw new Error((response && response.error) || "预览失败");
-    }
-
-    if (response.warning) {
-      showToast(response.warning);
-    } else {
-      showToast("预览已应用");
-    }
-  } catch (error) {
-    showToast(error && error.message ? error.message : "预览失败");
-  }
-}
-
-async function handleRestore() {
-  try {
-    const tabId = await getCurrentTabId();
-    const response = await chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.clearElementPreview,
-      tabId,
-    });
-
-    if (!response || !response.ok) {
-      throw new Error((response && response.error) || "恢复失败");
-    }
-
-    showToast("已恢复原始样式");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "恢复失败");
-  }
-}
-
-async function handleCopyStylePrompt() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
-    return;
-  }
-
-  const changeType = refs.styleChangeSelect.value;
-  const previewValues = {
-    width: normalizeSize(refs.previewWidth.value),
-    height: normalizeSize(refs.previewHeight.value),
+// 快捷键以 Chrome 中的实际绑定为准（用户可能已在 chrome://extensions/shortcuts 修改）
+async function renderShortcuts() {
+  const labels = {
+    "start-selection": "开始选择",
+    "stop-selection": "停止选择",
   };
-
+  let commands = [];
   try {
-    await copyText(utils.buildStyleChangePrompt(record, changeType, previewValues));
-    const label = (utils.STYLE_CHANGE_TYPES[changeType] && utils.STYLE_CHANGE_TYPES[changeType].label) || changeType;
-    showToast("「" + label + "」提示词已复制");
+    commands = await chrome.commands.getAll();
   } catch (error) {
-    showToast(error && error.message ? error.message : "复制失败");
+    console.warn("读取快捷键失败：", error);
   }
+
+  const items = commands
+    .filter((command) => labels[command.name])
+    .map((command) => [labels[command.name], command.shortcut]);
+  items.push(["退出选择", "Esc"]);
+
+  refs.shortcutList.innerHTML = items
+    .map(
+      ([label, shortcut]) =>
+        `<li><span>${escapeHtml(label)}</span><span>${
+          shortcut
+            ? shortcut
+                .split("+")
+                .map((key) => `<kbd>${escapeHtml(key)}</kbd>`)
+                .join(" + ")
+            : "未设置"
+        }</span></li>`
+    )
+    .join("");
 }
 
-async function handleExport() {
-  if (!state.records.length) {
-    showToast("暂无可导出的记录");
-    return;
-  }
+async function handleToggleSelection() {
+  const isSelecting = Boolean(state.selectionState && state.selectionState.isSelecting);
+  const type = isSelecting ? MESSAGE_TYPES.stopSelection : MESSAGE_TYPES.startSelection;
+  const fallbackError = isSelecting ? "停止选择失败" : "开启选择模式失败";
 
   try {
-    utils.downloadJsonFile("元素快照记录.json", state.records);
-    showToast("JSON 文件已开始下载");
+    const tabId = await getCurrentTabId();
+    const response = await chrome.runtime.sendMessage({ type, tabId });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || fallbackError);
+    }
+    await refreshAll();
   } catch (error) {
-    showToast(error && error.message ? error.message : "导出失败");
-  }
-}
-
-async function handleClearRecords() {
-  if (!state.records.length) {
-    showToast("当前没有可清空的记录");
-    return;
-  }
-
-  try {
-    await utils.clearRecords();
-    state.selectedId = "";
-    await refreshAll(false);
-    showToast("记录已清空");
-  } catch (error) {
-    showToast(error && error.message ? error.message : "清空失败");
+    showToast(getErrorMessage(error, fallbackError));
   }
 }
 
@@ -538,127 +373,199 @@ function handleSearchInput(event) {
   // 防抖：连续输入时只在停顿后过滤+重渲染一次，避免每次按键全量重建列表
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = window.setTimeout(() => {
+    flushNoteSave();
     state.searchKeyword = value;
     applyFilter();
-    ensureValidSelection(true);
+    ensureValidSelection();
     render();
   }, 150);
 }
 
-async function handleSaveNote() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
+function handleNoteInput(event) {
+  renderPromptPreview();
+  // 输入法组字过程中不保存，等 compositionend 再触发
+  if (event.isComposing) {
+    clearTimeout(pendingNoteSave && pendingNoteSave.timer);
+    return;
+  }
+
+  const recordId = state.selectedId;
+  if (!recordId) {
+    return;
+  }
+
+  clearTimeout(pendingNoteSave && pendingNoteSave.timer);
+  pendingNoteSave = {
+    recordId,
+    timer: window.setTimeout(flushNoteSave, NOTE_SAVE_DELAY_MS),
+  };
+}
+
+function flushNoteSave() {
+  if (!pendingNoteSave) {
+    return;
+  }
+  const { recordId, timer } = pendingNoteSave;
+  clearTimeout(timer);
+  pendingNoteSave = null;
+
+  utils.updateRecordNote(recordId, refs.noteInput.value || "").catch((error) => {
+    showToast(getErrorMessage(error, "保存需求失败"));
+  });
+}
+
+async function handleCopyPrompt() {
+  const prompt = buildCurrentPrompt();
+  if (!prompt) {
+    return;
+  }
+
+  flushNoteSave();
+  try {
+    await copyText(prompt);
+    showToast("已复制，粘贴给 AI 即可");
+  } catch (error) {
+    showToast(getErrorMessage(error, "复制失败"));
+  }
+}
+
+function handleExport() {
+  refs.moreMenu.hidePopover();
+  if (!state.records.length) {
     return;
   }
 
   try {
-    await utils.updateRecordNote(record.id, refs.noteInput.value || "");
-    await refreshAll(true);
-    showToast("备注已保存");
+    utils.downloadJsonFile("元素快照记录.json", state.records);
+    showToast("JSON 文件已开始下载");
   } catch (error) {
-    showToast(error && error.message ? error.message : "保存备注失败");
+    showToast(getErrorMessage(error, "导出失败"));
   }
 }
 
-async function handleDeleteCurrent() {
-  const record = getSelectedRecord();
-  if (!record) {
-    showToast("请先选择一条记录");
+async function handleClearRecords() {
+  refs.moreMenu.hidePopover();
+  if (!state.records.length) {
     return;
   }
 
+  flushNoteSave();
+  const snapshot = state.records.slice();
   try {
-    await utils.deleteRecord(record.id);
-    state.selectedId = "";
-    await refreshAll(false);
-    showToast("记录已删除");
+    await utils.clearRecords();
+    showUndoToast(`已清空 ${snapshot.length} 条记录`, snapshot);
   } catch (error) {
-    showToast(error && error.message ? error.message : "删除失败");
+    showToast(getErrorMessage(error, "清空失败"));
   }
 }
 
-async function handleListClick(event) {
+async function deleteRecordWithUndo(recordId) {
+  const record = state.records.find((item) => item.id === recordId);
+  if (!record) {
+    return;
+  }
+
+  flushNoteSave();
+  try {
+    await utils.deleteRecord(recordId);
+    showUndoToast("已删除 1 条记录", [record]);
+  } catch (error) {
+    showToast(getErrorMessage(error, "删除失败"));
+  }
+}
+
+// 撤销：把删掉的记录合并回当前列表（期间新采集的记录不会丢），按采集时间倒序
+async function restoreRecords(deletedRecords) {
+  const current = await utils.readRecords();
+  const existingIds = new Set(current.map((record) => record.id));
+  const merged = current
+    .concat(deletedRecords.filter((record) => !existingIds.has(record.id)))
+    .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  await utils.writeRecords(merged);
+}
+
+function handleListClick(event) {
   const deleteButton = event.target.closest("[data-delete-id]");
   if (deleteButton) {
     event.stopPropagation();
-    const recordId = deleteButton.dataset.deleteId;
-    try {
-      await utils.deleteRecord(recordId);
-      if (state.selectedId === recordId) {
-        state.selectedId = "";
-      }
-      await refreshAll(false);
-      showToast("记录已删除");
-    } catch (error) {
-      showToast(error && error.message ? error.message : "删除失败");
-    }
+    deleteRecordWithUndo(deleteButton.dataset.deleteId);
     return;
   }
 
   const card = event.target.closest("[data-record-id]");
-  if (!card) {
-    return;
+  if (card) {
+    applySelection(card.dataset.recordId);
+    highlightInPage();
   }
-
-  applySelection(card.dataset.recordId);
 }
 
+// ↑↓ 切换记录，Enter / 空格 在页面中定位
 function handleListKeyDown(event) {
-  if (!["Enter", " "].includes(event.key)) {
-    return;
-  }
-
   const card = event.target.closest("[data-record-id]");
-  if (!card) {
+  if (!card || event.target.closest("[data-delete-id]")) {
     return;
   }
 
-  event.preventDefault();
-  applySelection(card.dataset.recordId);
-}
-
-// 切换选中：仅更新受影响卡片的高亮 + 详情/操作区，避免重建整个列表 DOM
-function applySelection(newId) {
-  if (newId !== state.selectedId) {
-    tryClearPreview();
-    state.selectedId = newId;
-    updateSelectionHighlight();
-    renderDetail();
-    updateActionStates();
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    applySelection(card.dataset.recordId);
+    highlightInPage();
+    return;
   }
-  autoHighlightSelected();
+
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+    return;
+  }
+
+  const next = event.key === "ArrowDown" ? card.nextElementSibling : card.previousElementSibling;
+  if (next && next.dataset.recordId) {
+    event.preventDefault();
+    next.focus();
+    applySelection(next.dataset.recordId);
+  }
 }
 
-function updateSelectionHighlight() {
+// 切换选中：仅更新卡片高亮与底部编辑区，避免重建整个列表 DOM
+function applySelection(newId) {
+  if (newId === state.selectedId) {
+    return;
+  }
+  flushNoteSave();
+  state.selectedId = newId;
   refs.listContainer.querySelectorAll("[data-record-id]").forEach((card) => {
-    card.classList.toggle("is-selected", card.dataset.recordId === state.selectedId);
+    card.classList.toggle("is-selected", card.dataset.recordId === newId);
   });
+  renderComposer();
 }
 
-function renderFabMode() {
-  const buttons = refs.fabModeControl.querySelectorAll("[data-fab-mode]");
-  buttons.forEach((btn) => {
-    if (btn.dataset.fabMode === state.fabMode) {
-      btn.classList.add("is-active");
-    } else {
-      btn.classList.remove("is-active");
-    }
-  });
+async function highlightInPage() {
+  const record = getSelectedRecord();
+  if (!record) {
+    return;
+  }
+  try {
+    const tabId = await getCurrentTabId();
+    await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.highlightElement,
+      record,
+      tabId,
+    });
+  } catch (error) {
+    // 定位只是辅助功能，失败时静默
+  }
 }
 
 async function handleFabModeClick(event) {
   const btn = event.target.closest("[data-fab-mode]");
-  if (!btn) return;
-
-  const mode = btn.dataset.fabMode;
-  if (mode === state.fabMode) return;
+  if (!btn || btn.dataset.fabMode === state.fabMode) {
+    return;
+  }
 
   try {
     const tabId = await getCurrentTabId();
     const response = await chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.setFabMode,
-      mode,
+      mode: btn.dataset.fabMode,
       tabId,
     });
 
@@ -666,13 +573,10 @@ async function handleFabModeClick(event) {
       throw new Error("切换悬浮球模式失败");
     }
 
-    state.fabMode = response.fabMode || mode;
+    state.fabMode = response.fabMode || btn.dataset.fabMode;
     renderFabMode();
-
-    const labels = { off: "已关闭悬浮球", "current-tab": "悬浮球：仅当前页", "all-tabs": "悬浮球：所有网页" };
-    showToast(labels[state.fabMode] || "已切换");
   } catch (error) {
-    showToast(error && error.message ? error.message : "切换失败");
+    showToast(getErrorMessage(error, "切换失败"));
   }
 }
 
@@ -701,13 +605,45 @@ async function copyText(text) {
   textarea.remove();
 }
 
-function showToast(message) {
+let toastActionHandler = null;
+
+function showToast(message, action) {
   clearTimeout(toastTimer);
-  refs.toast.textContent = message;
+  toastActionHandler = action ? action.onClick : null;
+  refs.toastText.textContent = message;
+  refs.toastAction.hidden = !action;
   refs.toast.hidden = false;
-  toastTimer = window.setTimeout(() => {
-    refs.toast.hidden = true;
-  }, 2200);
+  toastTimer = window.setTimeout(hideToast, action ? UNDO_TOAST_MS : 2200);
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastActionHandler = null;
+  refs.toast.hidden = true;
+}
+
+function showUndoToast(message, deletedRecords) {
+  showToast(message, {
+    onClick: () => restoreRecords(deletedRecords),
+  });
+}
+
+async function handleToastAction() {
+  const handler = toastActionHandler;
+  hideToast();
+  if (!handler) {
+    return;
+  }
+  try {
+    await handler();
+    showToast("已撤销");
+  } catch (error) {
+    showToast(getErrorMessage(error, "撤销失败"));
+  }
+}
+
+function getErrorMessage(error, fallback) {
+  return error && error.message ? error.message : fallback;
 }
 
 function escapeHtml(value) {
@@ -717,28 +653,4 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function getFrameworkMetaLine(record) {
-  if (
-    record &&
-    record.frameworkHints &&
-    record.frameworkHints.react &&
-    Array.isArray(record.frameworkHints.react.componentChain) &&
-    record.frameworkHints.react.componentChain.length
-  ) {
-    return `React 组件链：${record.frameworkHints.react.componentChain.join(" > ")}`;
-  }
-
-  if (
-    record &&
-    record.frameworkHints &&
-    record.frameworkHints.vue &&
-    Array.isArray(record.frameworkHints.vue.componentChain) &&
-    record.frameworkHints.vue.componentChain.length
-  ) {
-    return `Vue 组件链：${record.frameworkHints.vue.componentChain.join(" > ")}`;
-  }
-
-  return "";
 }
